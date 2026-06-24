@@ -8,6 +8,7 @@ from modelo.formulario import RepositorioFormulario1
 from vista.ventanas_generales.vista_error import VistaError
 from vista.ventanas_generales.vista_informacion import VistaInformacion
 from vista.ventanas_generales.vista_confirmacion import VistaConfirmacion
+from controlador.utilidades_controlador import parsear_id
 from vista.vista_modulo_estudiante.interfaz_vista_modulo_estudiante import (
     VistaEstudiantePrincipal, VistaBuscarOfertas,
     VistaMisPostulaciones, VistaSolicitudes, VistaFormulario1
@@ -96,9 +97,10 @@ class ControladorEstudiante:
         return self.repo_practicas.activa_de_postulaciones(
             self.mis_postulaciones_ids(), Practica.ESTADOS_ACTIVA)
 
-    def fila_oferta(self, oferta):
-        return [oferta.id_oferta, self.nombre_empresa(oferta), oferta.puesto,
-                oferta.descripcion, oferta.fecha_publicacion]
+    def fila_oferta(self, d):
+        # d proviene de un JOIN (vista_oferta_detalle).
+        return [d["id_oferta"], d["nombre_empresa"], d["puesto"],
+                d["descripcion"], d["fecha_publicacion"]]
 
     def fila_postulacion(self, post):
         oferta = self.repo_ofertas.buscar(post.id_oferta)
@@ -112,8 +114,7 @@ class ControladorEstudiante:
         return [sol["id"], sol["tipo"], sol["estado"], sol["fecha"]]
 
     def refrescar_tabla_ofertas(self):
-        self.cargar_datos()
-        self.pintar_tabla(self.v_ofertas.tblOfertas, self.repo_ofertas.listar(), self.fila_oferta)
+        self.pintar_tabla(self.v_ofertas.tblOfertas, self.repo_ofertas.detalle_disponibles(), self.fila_oferta)
 
     def refrescar_tabla_postulaciones(self):
         self.cargar_datos()
@@ -126,10 +127,8 @@ class ControladorEstudiante:
         self.pintar_tabla(self.v_solicitudes.tblSolicitudes, mis, self.fila_solicitud)
 
     def slot_postular(self):
-        id_oferta = self.v_ofertas.txtIdOferta.text().strip()
         try:
-            if not id_oferta:
-                raise ValueError("Ingrese el ID de la oferta.")
+            id_oferta = parsear_id(self.v_ofertas.txtIdOferta.text(), "ID de la oferta")
             oferta = self.repo_ofertas.buscar(id_oferta)
             if not oferta:
                 raise ValueError(f"No se encontró la oferta con ID '{id_oferta}'.")
@@ -194,13 +193,13 @@ class ControladorEstudiante:
         self.cargar_datos()
         practica = self.practica_activa()
         if practica:
-            self.v_form1.txtIdPractica.setText(practica.id_practica)
+            self.v_form1.txtIdPractica.setText(str(practica.id_practica))
             self.pintar_cabecera_form1(practica)
 
     def slot_cargar_form1(self):
         self.cargar_datos()
-        id_practica = self.v_form1.txtIdPractica.text().strip()
         try:
+            id_practica = parsear_id(self.v_form1.txtIdPractica.text(), "ID de la práctica")
             practica = self.practica_de_estudiante(id_practica)
             self.pintar_cabecera_form1(practica)
         except ValueError as e:
@@ -236,8 +235,8 @@ class ControladorEstudiante:
         return list(map(actividad, filas))
 
     def slot_guardar_form1(self):
-        id_practica = self.v_form1.txtIdPractica.text().strip()
         try:
+            id_practica = parsear_id(self.v_form1.txtIdPractica.text(), "ID de la práctica")
             practica = self.practica_de_estudiante(id_practica)
             if practica.estado != Practica.EN_PROGRESO:
                 raise ValueError(
@@ -287,7 +286,7 @@ class ControladorEstudiante:
                     self.vista_menu):
                 return
             practica.estado = Practica.EVALUACION_SOLICITADA
-            self.repo_practicas.guardar()
+            self.repo_practicas.actualizar(practica)
             QMessageBox.information(self.vista_menu, "Éxito",
                                     "Evaluación final solicitada. El tutor empresarial será notificado.")
         except ValueError as e:

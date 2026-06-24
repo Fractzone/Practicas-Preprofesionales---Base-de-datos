@@ -15,10 +15,6 @@ class Oferta:
         self.ruc_empresa = ruc_empresa
         self.eliminado = eliminado
 
-    @staticmethod
-    def buscar_por_id(diccionario_ofertas, id_buscado):
-        return diccionario_ofertas.get(id_buscado, None)
-
     def __repr__(self):
         return f"Oferta(id='{self.id_oferta}', puesto='{self.puesto}', empresa='{self.ruc_empresa}')"
 
@@ -28,38 +24,38 @@ class RepositorioOferta:
 
     def __init__(self, persistencia):
         self.persistencia = persistencia
-        self.ofertas = self.persistencia.cargar(self.ENTIDAD)
 
     def recargar(self):
-        self.ofertas = self.persistencia.cargar(self.ENTIDAD)
+        # Compatibilidad: ya no hay caché en memoria; cada método consulta la BD.
+        pass
 
-    def guardar(self):
-        self.persistencia.guardar(self.ENTIDAD, self.ofertas)
+    def actualizar(self, oferta):
+        self.persistencia.actualizar(self.ENTIDAD, oferta)
 
     def listar(self):
-        return list(filter(lambda o: not o.eliminado, self.ofertas.values()))
+        return self.persistencia.listar(self.ENTIDAD)
 
     def buscar(self, id_oferta):
-        oferta = Oferta.buscar_por_id(self.ofertas, id_oferta)
+        oferta = self.persistencia.obtener(self.ENTIDAD, id_oferta)
         return oferta if oferta is not None and not oferta.eliminado else None
 
     def de_empresa(self, ruc_empresa):
-        return list(filter(lambda o: o.ruc_empresa == ruc_empresa and not o.eliminado, self.ofertas.values()))
+        return self.persistencia.listar(self.ENTIDAD, where="ruc_empresa = %s", params=(ruc_empresa,))
 
-    def siguiente_id(self):
-        return str(max(
-            list(map(int, filter(lambda k: k.isdigit(), self.ofertas.keys()))),
-            default=0) + 1)
+    def detalle_disponibles(self):
+        """Ofertas activas con el nombre de su empresa (JOIN vía vista)."""
+        s = self.persistencia.schema
+        return self.persistencia.consultar(
+            f'SELECT * FROM "{s}".vista_oferta_detalle '
+            f'WHERE eliminado = FALSE ORDER BY id_oferta')
 
     def agregar(self, descripcion, puesto, fecha_publicacion, ruc_empresa):
         if not ruc_empresa:
             raise ValueError("Seleccione una empresa.")
         if not all([puesto, descripcion]):
             raise ValueError("Complete el puesto y la descripción.")
-        nuevo_id = self.siguiente_id()
-        nueva = Oferta(nuevo_id, descripcion, puesto, fecha_publicacion, ruc_empresa)
-        self.ofertas[nuevo_id] = nueva
-        self.guardar()
+        nueva = Oferta(None, descripcion, puesto, fecha_publicacion, ruc_empresa)
+        self.persistencia.insertar(self.ENTIDAD, nueva)  # la base asigna id_oferta
         return nueva
 
 
@@ -74,10 +70,6 @@ class Postulacion:
         self.id_coordinador = id_coordinador
         self.eliminado = eliminado
 
-    @staticmethod
-    def buscar_por_id(diccionario_postulaciones, id_buscado):
-        return diccionario_postulaciones.get(id_buscado, None)
-
     def __repr__(self):
         return f"Postulacion(id='{self.id_postulacion}', estado='{self.estado_validacion}', estudiante='{self.cedula_estudiante}')"
 
@@ -87,51 +79,54 @@ class RepositorioPostulacion:
 
     def __init__(self, persistencia):
         self.persistencia = persistencia
-        self.postulaciones = self.persistencia.cargar(self.ENTIDAD)
 
     def recargar(self):
-        self.postulaciones = self.persistencia.cargar(self.ENTIDAD)
+        # Compatibilidad: ya no hay caché en memoria; cada método consulta la BD.
+        pass
 
-    def guardar(self):
-        self.persistencia.guardar(self.ENTIDAD, self.postulaciones)
+    def actualizar(self, postulacion):
+        self.persistencia.actualizar(self.ENTIDAD, postulacion)
 
     def listar(self):
-        return list(filter(lambda p: not p.eliminado, self.postulaciones.values()))
+        return self.persistencia.listar(self.ENTIDAD)
 
     def buscar(self, id_postulacion):
-        postulacion = Postulacion.buscar_por_id(self.postulaciones, id_postulacion)
+        postulacion = self.persistencia.obtener(self.ENTIDAD, id_postulacion)
         return postulacion if postulacion is not None and not postulacion.eliminado else None
 
-    def siguiente_id(self):
-        return str(max(
-            list(map(int, filter(lambda k: k.isdigit(), self.postulaciones.keys()))),
-            default=0) + 1)
-
     def de_estudiante(self, cedula):
-        return list(filter(lambda p: p.cedula_estudiante == cedula and not p.eliminado, self.postulaciones.values()))
+        return self.persistencia.listar(self.ENTIDAD, where="cedula_estudiante = %s", params=(cedula,))
 
     def de_ofertas(self, ids_oferta):
-        return list(filter(lambda p: p.id_oferta in ids_oferta and not p.eliminado, self.postulaciones.values()))
+        return self.persistencia.listar(self.ENTIDAD, where="id_oferta = ANY(%s)", params=(list(ids_oferta),))
 
     def por_estado(self, estado):
-        return list(filter(lambda p: p.estado_validacion == estado and not p.eliminado, self.postulaciones.values()))
+        return self.persistencia.listar(self.ENTIDAD, where="estado_validacion = %s", params=(estado,))
 
     def validadas_de_oferta(self, id_oferta):
-        return list(filter(
-            lambda p: p.estado_validacion == "Validada" and p.id_oferta == id_oferta and not p.eliminado,
-            self.postulaciones.values()))
+        return self.persistencia.listar(
+            self.ENTIDAD,
+            where="estado_validacion = %s AND id_oferta = %s",
+            params=("Validada", id_oferta))
+
+    def detalle_pendientes(self):
+        """Postulaciones pendientes con datos de estudiante y oferta (JOIN vía vista)."""
+        s = self.persistencia.schema
+        return self.persistencia.consultar(
+            f'SELECT * FROM "{s}".vista_postulacion_detalle '
+            f'WHERE estado_validacion = %s AND eliminado = FALSE ORDER BY id_postulacion',
+            ("Pendiente",))
 
     def tiene_activa_para_oferta(self, cedula, id_oferta):
-        return any(filter(
-            lambda p: p.cedula_estudiante == cedula and p.id_oferta == id_oferta and
-                      p.estado_validacion != "Rechazada" and not p.eliminado,
-            self.postulaciones.values()))
+        activas = self.persistencia.listar(
+            self.ENTIDAD,
+            where="cedula_estudiante = %s AND id_oferta = %s AND estado_validacion <> %s",
+            params=(cedula, id_oferta, "Rechazada"))
+        return bool(activas)
 
     def agregar(self, fecha, estado, cedula_estudiante, id_oferta, id_coordinador):
-        nuevo_id = self.siguiente_id()
-        nueva = Postulacion(nuevo_id, fecha, estado, cedula_estudiante, id_oferta, id_coordinador)
-        self.postulaciones[nuevo_id] = nueva
-        self.guardar()
+        nueva = Postulacion(None, fecha, estado, cedula_estudiante, id_oferta, id_coordinador)
+        self.persistencia.insertar(self.ENTIDAD, nueva)  # la base asigna id_postulacion
         return nueva
 
 
@@ -153,10 +148,6 @@ class Practica:
         self.id_tutor_empresarial = id_tutor_empresarial
         self.eliminado = eliminado
 
-    @staticmethod
-    def buscar_por_id(diccionario_practicas, id_buscado):
-        return diccionario_practicas.get(id_buscado, None)
-
     def __repr__(self):
         return f"Practica(id='{self.id_practica}', estado='{self.estado}', postulacion='{self.id_postulacion}')"
 
@@ -166,60 +157,72 @@ class RepositorioPractica:
 
     def __init__(self, persistencia):
         self.persistencia = persistencia
-        self.practicas = self.persistencia.cargar(self.ENTIDAD)
 
     def recargar(self):
-        self.practicas = self.persistencia.cargar(self.ENTIDAD)
+        # Compatibilidad: ya no hay caché en memoria; cada método consulta la BD.
+        pass
 
-    def guardar(self):
-        self.persistencia.guardar(self.ENTIDAD, self.practicas)
+    def actualizar(self, practica):
+        self.persistencia.actualizar(self.ENTIDAD, practica)
 
     def listar(self):
-        return list(filter(lambda p: not p.eliminado, self.practicas.values()))
+        return self.persistencia.listar(self.ENTIDAD)
 
     def buscar(self, id_practica):
-        practica = Practica.buscar_por_id(self.practicas, id_practica)
+        practica = self.persistencia.obtener(self.ENTIDAD, id_practica)
         return practica if practica is not None and not practica.eliminado else None
 
-    def siguiente_id(self):
-        return str(max(
-            list(map(int, filter(lambda k: k.isdigit(), self.practicas.keys()))),
-            default=0) + 1)
-
     def en_estados(self, estados):
-        return list(filter(lambda p: p.estado in estados and not p.eliminado, self.practicas.values()))
+        return self.persistencia.listar(self.ENTIDAD, where="estado = ANY(%s)", params=(list(estados),))
 
     def activa_de_postulaciones(self, ids_postulacion, estados):
-        return next(filter(
-            lambda pr: pr.estado in estados and pr.id_postulacion in ids_postulacion and not pr.eliminado,
-            self.practicas.values()), None)
+        practicas = self.persistencia.listar(
+            self.ENTIDAD,
+            where="estado = ANY(%s) AND id_postulacion = ANY(%s)",
+            params=(list(estados), list(ids_postulacion)))
+        return practicas[0] if practicas else None
 
     def por_tutor_academico(self, cedula, estados):
-        return list(filter(
-            lambda pr: pr.id_tutor_academico == cedula and pr.estado in estados and not pr.eliminado,
-            self.practicas.values()))
+        return self.persistencia.listar(
+            self.ENTIDAD,
+            where="id_tutor_academico = %s AND estado = ANY(%s)",
+            params=(cedula, list(estados)))
 
     def por_tutor_empresarial(self, cedula, estados):
-        return list(filter(
-            lambda pr: pr.id_tutor_empresarial == cedula and pr.estado in estados and not pr.eliminado,
-            self.practicas.values()))
+        return self.persistencia.listar(
+            self.ENTIDAD,
+            where="id_tutor_empresarial = %s AND estado = ANY(%s)",
+            params=(cedula, list(estados)))
 
     def de_postulaciones(self, ids_postulacion):
-        return list(filter(
-            lambda pr: pr.id_postulacion in ids_postulacion and not pr.eliminado,
-            self.practicas.values()))
+        return self.persistencia.listar(
+            self.ENTIDAD, where="id_postulacion = ANY(%s)", params=(list(ids_postulacion),))
 
     def de_tutor_empresarial(self, cedula):
-        return list(filter(
-            lambda pr: pr.id_tutor_empresarial == cedula and not pr.eliminado,
-            self.practicas.values()))
+        return self.persistencia.listar(
+            self.ENTIDAD, where="id_tutor_empresarial = %s", params=(cedula,))
+
+    def detalle_en_estados(self, estados):
+        """Prácticas en ciertos estados con estudiante y tutores (JOIN vía vista)."""
+        s = self.persistencia.schema
+        return self.persistencia.consultar(
+            f'SELECT * FROM "{s}".vista_practica_detalle '
+            f'WHERE estado = ANY(%s) AND eliminado = FALSE ORDER BY id_practica',
+            (list(estados),))
+
+    def detalle_por_tutor_empresarial(self, cedula, estados):
+        """Prácticas activas de una empresa con estudiante y tutor académico (JOIN vía vista)."""
+        s = self.persistencia.schema
+        return self.persistencia.consultar(
+            f'SELECT * FROM "{s}".vista_practica_detalle '
+            f'WHERE id_tutor_empresarial = %s AND estado = ANY(%s) AND eliminado = FALSE '
+            f'ORDER BY id_practica',
+            (cedula, list(estados)))
 
     def agregar(self, fecha_inicio, fecha_fin, estado, id_postulacion, id_tutor_academico, id_tutor_empresarial):
-        nuevo_id = self.siguiente_id()
-        nueva = Practica(nuevo_id, fecha_inicio, fecha_fin, estado, id_postulacion,
+        nueva = Practica(None, fecha_inicio, fecha_fin, estado, id_postulacion,
                          id_tutor_academico, id_tutor_empresarial)
-        self.practicas[nuevo_id] = nueva
-        self.guardar()
+        self.persistencia.insertar(self.ENTIDAD, nueva)  # la base asigna id_practica
         return nueva
 
 
@@ -228,33 +231,26 @@ class RepositorioSolicitud:
 
     def __init__(self, persistencia):
         self.persistencia = persistencia
-        self.solicitudes = self.persistencia.cargar(self.ENTIDAD)
 
     def recargar(self):
-        self.solicitudes = self.persistencia.cargar(self.ENTIDAD)
+        # Compatibilidad: ya no hay caché en memoria; cada método consulta la BD.
+        pass
 
-    def guardar(self):
-        self.persistencia.guardar(self.ENTIDAD, self.solicitudes)
+    def actualizar(self, solicitud):
+        self.persistencia.actualizar(self.ENTIDAD, solicitud)
 
     def listar(self):
-        return list(filter(lambda s: not s.get("eliminado", False), self.solicitudes.values()))
-
-    def siguiente_id(self):
-        return str(max(
-            list(map(int, filter(lambda k: k.isdigit(), self.solicitudes.keys()))),
-            default=0) + 1)
+        return self.persistencia.listar(self.ENTIDAD)
 
     def buscar(self, id_solicitud):
-        solicitud = self.solicitudes.get(id_solicitud, None)
+        solicitud = self.persistencia.obtener(self.ENTIDAD, id_solicitud)
         return solicitud if solicitud is not None and not solicitud.get("eliminado", False) else None
 
     def de_estudiante(self, cedula):
-        return list(filter(lambda s: s.get("cedula_estudiante") == cedula and not s.get("eliminado", False),
-                           self.solicitudes.values()))
+        return self.persistencia.listar(self.ENTIDAD, where="cedula_estudiante = %s", params=(cedula,))
 
     def por_estado(self, estado):
-        return list(filter(lambda s: s.get("estado") == estado and not s.get("eliminado", False),
-                           self.solicitudes.values()))
+        return self.persistencia.listar(self.ENTIDAD, where="estado = %s", params=(estado,))
 
     @staticmethod
     def _validar_datos_empresa(datos):
@@ -273,10 +269,8 @@ class RepositorioSolicitud:
             raise ValueError("Debe ingresar el motivo o detalle de la solicitud.")
         if datos_empresa is not None:
             self._validar_datos_empresa(datos_empresa)
-        nuevo_id = self.siguiente_id()
-        nueva = {"id": nuevo_id, "tipo": tipo, "motivo": motivo, "estado": "Pendiente",
+        nueva = {"tipo": tipo, "motivo": motivo, "estado": "Pendiente",
                  "cedula_estudiante": cedula_estudiante, "fecha": fecha, "datos_empresa": datos_empresa,
                  "eliminado": False}
-        self.solicitudes[nuevo_id] = nueva
-        self.guardar()
+        self.persistencia.insertar(self.ENTIDAD, nueva)  # la base asigna "id"
         return nueva

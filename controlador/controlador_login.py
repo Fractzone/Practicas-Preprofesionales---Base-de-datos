@@ -1,4 +1,4 @@
-from modelo.credencial import Credencial
+from modelo.seguridad import verificar_password
 from vista.vista_login.interfaz_vista_login import VistaLogin
 from vista.ventanas_generales.vista_error import VistaError
 from vista.ventanas_generales.vista_informacion import VistaInformacion
@@ -36,10 +36,10 @@ class ControladorLogin:
             if not (identificador and contrasena):
                 raise ValueError("Por favor, ingrese su usuario y contraseña.")
 
-            credenciales = self.persistencia.cargar(self.ENTIDAD)
-            credencial = Credencial.autenticar(credenciales, identificador, contrasena)
+            credencial = self.persistencia.obtener(self.ENTIDAD, identificador)
 
-            if credencial is None:
+            if (credencial is None or credencial.eliminado or
+                    not verificar_password(contrasena, credencial.contrasena)):
                 raise ValueError("Usuario o contraseña incorrectos.")
 
             self.abrir_modulo(credencial)

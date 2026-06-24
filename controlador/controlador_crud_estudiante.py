@@ -33,7 +33,8 @@ class ControladorCRUDEstudiante:
 
     @staticmethod
     def fila(e):
-        return [e.cedula, e.contrasena, e.apellidos, e.nombres, e.telefono, e.email,
+        # La contraseña se almacena cifrada y no se muestra (buena práctica).
+        return [e.cedula, "••••••••", e.apellidos, e.nombres, e.telefono, e.email,
                 e.carrera, e.ciclo, e.total_horas_realizadas]
 
     def refrescar_tabla(self):
@@ -51,12 +52,13 @@ class ControladorCRUDEstudiante:
         try:
             if SincronizadorCredenciales.existe_activo(self.persistencia, self.vista.txtCedula.text().strip()):
                 raise ValueError("Ya existe un usuario activo con esa cédula.")
-            nuevo = self.repo.agregar(
-                self.vista.txtCedula.text().strip(), self.vista.txtContrasena.text().strip(),
-                self.vista.txtApellidos.text().strip(), self.vista.txtNombres.text().strip(),
-                self.vista.txtTelefono.text().strip(), self.vista.txtEmail.text().strip(),
-                self.vista.cmbCarrera.currentText(), self.vista.spnCiclo.value())
-            SincronizadorCredenciales.agregar(self.persistencia, nuevo.cedula, nuevo.contrasena, Estudiante.ROL)
+            with self.persistencia.transaccion():
+                nuevo = self.repo.agregar(
+                    self.vista.txtCedula.text().strip(), self.vista.txtContrasena.text().strip(),
+                    self.vista.txtApellidos.text().strip(), self.vista.txtNombres.text().strip(),
+                    self.vista.txtTelefono.text().strip(), self.vista.txtEmail.text().strip(),
+                    self.vista.cmbCarrera.currentText(), self.vista.spnCiclo.value())
+                SincronizadorCredenciales.agregar(self.persistencia, nuevo.cedula, nuevo.contrasena, Estudiante.ROL)
             self.refrescar_tabla()
             QMessageBox.information(self.vista, "Éxito", "Estudiante agregado correctamente.")
             self.limpiar()
@@ -72,9 +74,10 @@ class ControladorCRUDEstudiante:
             if not VistaConfirmacion.confirmar(
                     f"¿Eliminar al estudiante {estudiante.nombres} {estudiante.apellidos} (cédula {cedula})?", self.vista):
                 return
-            self.repo.eliminar(cedula)
-            SincronizadorCredenciales.eliminar(self.persistencia, cedula)
-            eliminacion_cascada.por_estudiante(self.persistencia, cedula)
+            with self.persistencia.transaccion():
+                self.repo.eliminar(cedula)
+                SincronizadorCredenciales.eliminar(self.persistencia, cedula)
+                eliminacion_cascada.por_estudiante(self.persistencia, cedula)
             self.refrescar_tabla()
             QMessageBox.information(self.vista, "Éxito",
                                     "Estudiante eliminado. Sus postulaciones, prácticas y solicitudes también se dieron de baja.")

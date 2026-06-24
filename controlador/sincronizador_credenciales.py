@@ -5,20 +5,17 @@ class SincronizadorCredenciales:
 
     @staticmethod
     def agregar(persistencia, identificador, contrasena, rol):
-        credenciales = persistencia.cargar(SincronizadorCredenciales.ENTIDAD)
-        credenciales[identificador] = Credencial(identificador, contrasena, rol)
-        persistencia.guardar(SincronizadorCredenciales.ENTIDAD, credenciales)
+        persistencia.actualizar(
+            SincronizadorCredenciales.ENTIDAD,
+            Credencial(identificador, contrasena, rol))
 
     @staticmethod
     def existe_activo(persistencia, identificador):
-        credenciales = persistencia.cargar(SincronizadorCredenciales.ENTIDAD)
-        credencial = credenciales.get(identificador)
+        credencial = persistencia.obtener(SincronizadorCredenciales.ENTIDAD, identificador)
         return credencial is not None and not credencial.eliminado
 
     @staticmethod
     def eliminar(persistencia, identificador):
-        credenciales = persistencia.cargar(SincronizadorCredenciales.ENTIDAD)
-        credencial = credenciales.get(identificador)
+        credencial = persistencia.obtener(SincronizadorCredenciales.ENTIDAD, identificador)
         if credencial is not None:
-            credencial.eliminado = True
-            persistencia.guardar(SincronizadorCredenciales.ENTIDAD, credenciales)
+            persistencia.marcar_eliminado(SincronizadorCredenciales.ENTIDAD, identificador)

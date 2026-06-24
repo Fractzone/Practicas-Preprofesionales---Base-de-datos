@@ -48,12 +48,13 @@ class ControladorCRUDTutorAcademico:
         try:
             if SincronizadorCredenciales.existe_activo(self.persistencia, self.vista.txtCedula.text().strip()):
                 raise ValueError("Ya existe un usuario activo con esa cédula.")
-            nuevo = self.repo.agregar(
-                self.vista.txtCedula.text().strip(), self.vista.txtContrasena.text().strip(),
-                self.vista.txtNombres.text().strip(), self.vista.txtApellidos.text().strip(),
-                self.vista.txtTelefono.text().strip(), self.vista.txtEmail.text().strip(),
-                self.vista.cmbCarrera.currentText())
-            SincronizadorCredenciales.agregar(self.persistencia, nuevo.cedula, nuevo.contrasena, TutorAcademico.ROL)
+            with self.persistencia.transaccion():
+                nuevo = self.repo.agregar(
+                    self.vista.txtCedula.text().strip(), self.vista.txtContrasena.text().strip(),
+                    self.vista.txtNombres.text().strip(), self.vista.txtApellidos.text().strip(),
+                    self.vista.txtTelefono.text().strip(), self.vista.txtEmail.text().strip(),
+                    self.vista.cmbCarrera.currentText())
+                SincronizadorCredenciales.agregar(self.persistencia, nuevo.cedula, nuevo.contrasena, TutorAcademico.ROL)
             self.refrescar_tabla()
             QMessageBox.information(self.vista, "Éxito", "Tutor académico agregado correctamente.")
             self.limpiar()
@@ -69,8 +70,9 @@ class ControladorCRUDTutorAcademico:
             if not VistaConfirmacion.confirmar(
                     f"¿Eliminar al tutor académico {tutor.nombres} {tutor.apellidos} (cédula {cedula})?", self.vista):
                 return
-            self.repo.eliminar(cedula)
-            SincronizadorCredenciales.eliminar(self.persistencia, cedula)
+            with self.persistencia.transaccion():
+                self.repo.eliminar(cedula)
+                SincronizadorCredenciales.eliminar(self.persistencia, cedula)
             self.refrescar_tabla()
             QMessageBox.information(self.vista, "Éxito", "Tutor académico eliminado correctamente.")
             self.vista.txtEliminarCedula.clear()

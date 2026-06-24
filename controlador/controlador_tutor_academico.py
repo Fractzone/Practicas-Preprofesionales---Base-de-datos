@@ -7,6 +7,7 @@ from modelo.formulario import RepositorioFormulario1, RepositorioFormulario2, Re
 from vista.ventanas_generales.vista_error import VistaError
 from vista.ventanas_generales.vista_informacion import VistaInformacion
 from vista.ventanas_generales.vista_confirmacion import VistaConfirmacion
+from controlador.utilidades_controlador import parsear_id
 from vista.vista_modulo_tutor_academico.interfaz_vista_modulo_tutor_academico import (
     VistaTutorAcademicoPrincipal, VistaAprobarFormulario1, VistaFormulario3,
     VistaListarPracticasActivas
@@ -106,16 +107,14 @@ class ControladorTutorAcademico:
         self.cargar_datos()
         self.pintar_tabla(self.v_aprobar.tblPendientes, self.pendientes_f1(), self.fila_pendiente)
 
-    def fila_practica(self, practica):
-        estudiante = self.estudiante_de_practica(practica)
-        empresa = self.empresa_de_practica(practica)
-        return [practica.id_practica, self.nombre_persona(estudiante),
-                empresa.nombre_empresa if empresa else "N/A",
-                practica.estado, practica.fecha_inicio]
+    def fila_practica(self, d):
+        # d proviene de un JOIN (vista_practica_detalle).
+        return [d["id_practica"], f'{d["est_nombres"]} {d["est_apellidos"]}',
+                d["nombre_empresa"] or "N/A",
+                d["estado"], d["fecha_inicio"]]
 
     def refrescar_practicas_activas(self):
-        self.cargar_datos()
-        activas = self.practicas_en_estado(Practica.ESTADOS_ACTIVA)
+        activas = self.repo_practicas.detalle_en_estados(Practica.ESTADOS_ACTIVA)
         self.pintar_tabla(self.v_practicas.tblPracticas, activas, self.fila_practica)
 
     def buscar_practica(self, id_practica):
@@ -126,8 +125,8 @@ class ControladorTutorAcademico:
 
     def slot_ver_detalle(self):
         self.cargar_datos()
-        id_practica = self.v_aprobar.txtIdPractica.text().strip()
         try:
+            id_practica = parsear_id(self.v_aprobar.txtIdPractica.text(), "ID de la práctica")
             practica = self.buscar_practica(id_practica)
             f1 = self.repo_formularios1.buscar_por_practica(id_practica)
             if not f1:
@@ -145,8 +144,8 @@ class ControladorTutorAcademico:
             VistaError(str(e), self.v_aprobar).exec()
 
     def slot_aprobar_f1(self):
-        id_practica = self.v_aprobar.txtIdPractica.text().strip()
         try:
+            id_practica = parsear_id(self.v_aprobar.txtIdPractica.text(), "ID de la práctica")
             practica = self.buscar_practica(id_practica)
             f1 = self.repo_formularios1.buscar_por_practica(id_practica)
             if not f1:
@@ -154,9 +153,10 @@ class ControladorTutorAcademico:
             if f1.estado_aprobacion != "Pendiente":
                 raise ValueError(f"El Formulario 1 ya fue procesado. Estado: {f1.estado_aprobacion}.")
             f1.estado_aprobacion = "Aprobado"
-            self.repo_formularios1.guardar()
             practica.estado = Practica.EN_EJECUCION
-            self.repo_practicas.guardar()
+            with self.persistencia.transaccion():
+                self.repo_formularios1.actualizar(f1)
+                self.repo_practicas.actualizar(practica)
             self.refrescar_tabla_pendientes()
             QMessageBox.information(self.v_aprobar, "Éxito",
                                     f"Formulario 1 aprobado. La práctica {id_practica} pasa a 'En Ejecución'.")
@@ -167,8 +167,8 @@ class ControladorTutorAcademico:
 
     def slot_cargar_form3(self):
         self.cargar_datos()
-        id_practica = self.v_form3.txtIdPractica.text().strip()
         try:
+            id_practica = parsear_id(self.v_form3.txtIdPractica.text(), "ID de la práctica")
             practica = self.buscar_practica(id_practica)
             if practica.estado != Practica.PENDIENTE_NOTA:
                 raise ValueError(
@@ -191,8 +191,8 @@ class ControladorTutorAcademico:
             VistaError(str(e), self.v_form3).exec()
 
     def slot_guardar_form3(self):
-        id_practica = self.v_form3.txtIdPractica.text().strip()
         try:
+            id_practica = parsear_id(self.v_form3.txtIdPractica.text(), "ID de la práctica")
             practica = self.buscar_practica(id_practica)
             if practica.estado != Practica.PENDIENTE_NOTA:
                 raise ValueError(f"No es posible evaluar. Estado actual de la práctica: {practica.estado}.")
@@ -207,8 +207,8 @@ class ControladorTutorAcademico:
             VistaError(str(e), self.v_form3).exec()
 
     def slot_asentar_nota(self):
-        id_practica = self.v_form3.txtIdPractica.text().strip()
         try:
+            id_practica = parsear_id(self.v_form3.txtIdPractica.text(), "ID de la práctica")
             practica = self.buscar_practica(id_practica)
             if practica.estado != Practica.PENDIENTE_NOTA:
                 raise ValueError(f"La práctica no está lista para cierre. Estado: {practica.estado}.")
@@ -221,8 +221,9 @@ class ControladorTutorAcademico:
                 return
             practica.estado = Practica.FINALIZADA
             practica.fecha_fin = datetime.now().strftime("%d/%m/%Y")
-            self.repo_practicas.guardar()
-            self.acreditar_practica(practica)
+            with self.persistencia.transaccion():
+                self.repo_practicas.actualizar(practica)
+                self.acreditar_practica(practica)
             QMessageBox.information(self.v_form3, "Éxito",
                                     f"Nota asentada. Práctica {id_practica} finalizada y aprobada.")
             self.v_form3.txtIdPractica.clear()
@@ -247,4 +248,4 @@ class ControladorTutorAcademico:
             formulario2 = self.repo_formularios2.buscar_por_practica(practica.id_practica)
             if formulario2:
                 estudiante.total_horas_realizadas = estudiante.total_horas_realizadas + formulario2.horas_cumplidas
-            self.repo_estudiantes.guardar()
+            self.repo_estudiantes.actualizar(estudiante)

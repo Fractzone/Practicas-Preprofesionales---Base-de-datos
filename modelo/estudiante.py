@@ -33,10 +33,6 @@ class Estudiante:
         self.total_horas_realizadas = total_horas_realizadas
         self.eliminado = eliminado
 
-    @staticmethod
-    def buscar_por_cedula(diccionario_estudiantes, cedula):
-        return diccionario_estudiantes.get(cedula, None)
-
     def __repr__(self):
         return f"Estudiante(cedula='{self.cedula}', nombres='{self.nombres}', apellidos='{self.apellidos}')"
 
@@ -46,34 +42,31 @@ class RepositorioEstudiante:
 
     def __init__(self, persistencia):
         self.persistencia = persistencia
-        self.estudiantes = self.persistencia.cargar(self.ENTIDAD)
 
     def recargar(self):
-        self.estudiantes = self.persistencia.cargar(self.ENTIDAD)
+        # Compatibilidad: ya no hay caché en memoria; cada método consulta la BD.
+        pass
 
-    def guardar(self):
-        self.persistencia.guardar(self.ENTIDAD, self.estudiantes)
+    def actualizar(self, estudiante):
+        self.persistencia.actualizar(self.ENTIDAD, estudiante)
 
     def listar(self):
-        return list(filter(lambda e: not e.eliminado, self.estudiantes.values()))
+        return self.persistencia.listar(self.ENTIDAD)
 
     def buscar(self, cedula):
-        estudiante = Estudiante.buscar_por_cedula(self.estudiantes, cedula)
+        estudiante = self.persistencia.obtener(self.ENTIDAD, cedula)
         return estudiante if estudiante is not None and not estudiante.eliminado else None
 
     def agregar(self, cedula, contrasena, apellidos, nombres, telefono, email, carrera, ciclo):
         if not all([cedula, contrasena, apellidos, nombres, telefono, email, carrera]):
             raise ValueError("Por favor, complete todos los campos de texto obligatorios.")
-        if cedula in self.estudiantes:
+        if self.persistencia.existe(self.ENTIDAD, cedula):
             raise ValueError(f"El estudiante con cédula {cedula} ya está registrado.")
         nuevo = Estudiante(cedula, contrasena, apellidos, nombres, telefono, email, carrera, ciclo)
-        self.estudiantes[nuevo.cedula] = nuevo
-        self.guardar()
+        self.persistencia.insertar(self.ENTIDAD, nuevo)
         return nuevo
 
     def eliminar(self, cedula):
-        estudiante = self.estudiantes.get(cedula)
-        if estudiante is None or estudiante.eliminado:
+        if self.buscar(cedula) is None:
             raise ValueError("No existe un estudiante registrado con la cédula ingresada.")
-        estudiante.eliminado = True
-        self.guardar()
+        self.persistencia.marcar_eliminado(self.ENTIDAD, cedula)

@@ -32,7 +32,8 @@ class ControladorCRUDAdministrador:
 
     @staticmethod
     def fila(a):
-        return [a.usuario, a.contrasena, a.email]
+        # La contraseña se almacena cifrada y no se muestra (buena práctica).
+        return [a.usuario, "••••••••", a.email]
 
     def refrescar_tabla(self):
         self.repo.recargar()
@@ -46,10 +47,11 @@ class ControladorCRUDAdministrador:
         try:
             if SincronizadorCredenciales.existe_activo(self.persistencia, self.vista.txtUsuario.text().strip()):
                 raise ValueError("Ya existe un usuario activo con ese nombre de usuario.")
-            nuevo = self.repo.agregar(
-                self.vista.txtUsuario.text().strip(), self.vista.txtContrasena.text().strip(),
-                self.vista.txtEmail.text().strip())
-            SincronizadorCredenciales.agregar(self.persistencia, nuevo.usuario, nuevo.contrasena, Administrador.ROL)
+            with self.persistencia.transaccion():
+                nuevo = self.repo.agregar(
+                    self.vista.txtUsuario.text().strip(), self.vista.txtContrasena.text().strip(),
+                    self.vista.txtEmail.text().strip())
+                SincronizadorCredenciales.agregar(self.persistencia, nuevo.usuario, nuevo.contrasena, Administrador.ROL)
             self.refrescar_tabla()
             QMessageBox.information(self.vista, "Éxito", "Administrador agregado correctamente.")
             self.limpiar()
@@ -65,8 +67,9 @@ class ControladorCRUDAdministrador:
             if not VistaConfirmacion.confirmar(
                     f"¿Eliminar al administrador '{usuario}'?", self.vista):
                 return
-            self.repo.eliminar(usuario)
-            SincronizadorCredenciales.eliminar(self.persistencia, usuario)
+            with self.persistencia.transaccion():
+                self.repo.eliminar(usuario)
+                SincronizadorCredenciales.eliminar(self.persistencia, usuario)
             self.refrescar_tabla()
             QMessageBox.information(self.vista, "Éxito", "Administrador eliminado correctamente.")
             self.vista.txtEliminarUsuario.clear()

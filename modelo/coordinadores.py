@@ -27,10 +27,6 @@ class Coordinador:
         self.email = email
         self.eliminado = eliminado
 
-    @staticmethod
-    def buscar_por_cedula(diccionario, cedula):
-        return diccionario.get(cedula, None)
-
 
 class TutorAcademico(Coordinador):
     ROL = "tutor_academico"
@@ -50,40 +46,38 @@ class RepositorioTutorAcademico:
 
     def __init__(self, persistencia):
         self.persistencia = persistencia
-        self.tutores = self.persistencia.cargar(self.ENTIDAD)
 
     def recargar(self):
-        self.tutores = self.persistencia.cargar(self.ENTIDAD)
+        # Compatibilidad: ya no hay caché en memoria; cada método consulta la BD.
+        pass
 
-    def guardar(self):
-        self.persistencia.guardar(self.ENTIDAD, self.tutores)
+    def actualizar(self, tutor):
+        self.persistencia.actualizar(self.ENTIDAD, tutor)
 
     def listar(self):
-        return list(filter(lambda t: not t.eliminado, self.tutores.values()))
+        return self.persistencia.listar(self.ENTIDAD)
 
     def buscar(self, cedula):
-        tutor = TutorAcademico.buscar_por_cedula(self.tutores, cedula)
+        tutor = self.persistencia.obtener(self.ENTIDAD, cedula)
         return tutor if tutor is not None and not tutor.eliminado else None
 
     def por_carrera(self, carrera):
-        return next(filter(lambda t: t.carrera == carrera and not t.eliminado, self.tutores.values()), None)
+        tutores = self.persistencia.listar(self.ENTIDAD, where="carrera = %s", params=(carrera,))
+        return tutores[0] if tutores else None
 
     def agregar(self, cedula, contrasena, nombres, apellidos, telefono, email, carrera):
         if not all([cedula, contrasena, nombres, apellidos, telefono, email, carrera]):
             raise ValueError("Por favor, complete todos los campos obligatorios.")
-        if cedula in self.tutores:
+        if self.persistencia.existe(self.ENTIDAD, cedula):
             raise ValueError(f"El tutor académico con cédula {cedula} ya está registrado.")
         nuevo = TutorAcademico(cedula, contrasena, nombres, apellidos, telefono, email, carrera)
-        self.tutores[nuevo.cedula] = nuevo
-        self.guardar()
+        self.persistencia.insertar(self.ENTIDAD, nuevo)
         return nuevo
 
     def eliminar(self, cedula):
-        tutor = self.tutores.get(cedula)
-        if tutor is None or tutor.eliminado:
+        if self.buscar(cedula) is None:
             raise ValueError("No existe un tutor académico registrado con la cédula ingresada.")
-        tutor.eliminado = True
-        self.guardar()
+        self.persistencia.marcar_eliminado(self.ENTIDAD, cedula)
 
 
 class TutorEmpresarial(Coordinador):
@@ -110,45 +104,43 @@ class RepositorioTutorEmpresarial:
 
     def __init__(self, persistencia):
         self.persistencia = persistencia
-        self.tutores = self.persistencia.cargar(self.ENTIDAD)
 
     def recargar(self):
-        self.tutores = self.persistencia.cargar(self.ENTIDAD)
+        # Compatibilidad: ya no hay caché en memoria; cada método consulta la BD.
+        pass
 
-    def guardar(self):
-        self.persistencia.guardar(self.ENTIDAD, self.tutores)
+    def actualizar(self, tutor):
+        self.persistencia.actualizar(self.ENTIDAD, tutor)
 
     def listar(self):
-        return list(filter(lambda t: not t.eliminado, self.tutores.values()))
+        return self.persistencia.listar(self.ENTIDAD)
 
     def buscar(self, cedula):
-        tutor = TutorEmpresarial.buscar_por_cedula(self.tutores, cedula)
+        tutor = self.persistencia.obtener(self.ENTIDAD, cedula)
         return tutor if tutor is not None and not tutor.eliminado else None
 
     def buscar_por_ruc(self, ruc):
-        return next(filter(lambda t: t.ruc_empresa == ruc and not t.eliminado, self.tutores.values()), None)
+        tutores = self.persistencia.listar(self.ENTIDAD, where="ruc_empresa = %s", params=(ruc,))
+        return tutores[0] if tutores else None
 
     def agregar(self, cedula, contrasena, nombres, apellidos, telefono, email,
                 cargo, ruc_empresa, nombre_empresa, direccion_empresa):
         if not all([cedula, contrasena, nombres, apellidos, telefono, email,
                     cargo, ruc_empresa, nombre_empresa, direccion_empresa]):
             raise ValueError("Por favor, complete todos los campos obligatorios.")
-        if cedula in self.tutores:
+        if self.persistencia.existe(self.ENTIDAD, cedula):
             raise ValueError(f"El tutor empresarial con cédula {cedula} ya está registrado.")
         if self.buscar_por_ruc(ruc_empresa) is not None:
             raise ValueError(f"Ya existe una empresa registrada con el RUC {ruc_empresa}.")
         nuevo = TutorEmpresarial(cedula, contrasena, nombres, apellidos, telefono, email,
                                  cargo, ruc_empresa, nombre_empresa, direccion_empresa)
-        self.tutores[nuevo.cedula] = nuevo
-        self.guardar()
+        self.persistencia.insertar(self.ENTIDAD, nuevo)
         return nuevo
 
     def eliminar(self, cedula):
-        tutor = self.tutores.get(cedula)
-        if tutor is None or tutor.eliminado:
+        if self.buscar(cedula) is None:
             raise ValueError("No existe un tutor empresarial registrado con la cédula ingresada.")
-        tutor.eliminado = True
-        self.guardar()
+        self.persistencia.marcar_eliminado(self.ENTIDAD, cedula)
 
 
 class CoordinadorVinculacion(Coordinador):
@@ -174,36 +166,33 @@ class RepositorioCoordinadorVinculacion:
 
     def __init__(self, persistencia):
         self.persistencia = persistencia
-        self.coordinadores = self.persistencia.cargar(self.ENTIDAD)
 
     def recargar(self):
-        self.coordinadores = self.persistencia.cargar(self.ENTIDAD)
+        # Compatibilidad: ya no hay caché en memoria; cada método consulta la BD.
+        pass
 
-    def guardar(self):
-        self.persistencia.guardar(self.ENTIDAD, self.coordinadores)
+    def actualizar(self, coordinador):
+        self.persistencia.actualizar(self.ENTIDAD, coordinador)
 
     def listar(self):
-        return list(filter(lambda c: not c.eliminado, self.coordinadores.values()))
+        return self.persistencia.listar(self.ENTIDAD)
 
     def buscar(self, cedula):
-        coordinador = CoordinadorVinculacion.buscar_por_cedula(self.coordinadores, cedula)
+        coordinador = self.persistencia.obtener(self.ENTIDAD, cedula)
         return coordinador if coordinador is not None and not coordinador.eliminado else None
 
     def agregar(self, cedula, contrasena, nombres, apellidos, telefono, email,
                 fecha_nacimiento, direccion, carrera):
         if not all([cedula, contrasena, nombres, apellidos, telefono, email, direccion, carrera]):
             raise ValueError("Por favor, complete todos los campos obligatorios.")
-        if cedula in self.coordinadores:
+        if self.persistencia.existe(self.ENTIDAD, cedula):
             raise ValueError(f"El coordinador de vinculación con cédula {cedula} ya está registrado.")
         nuevo = CoordinadorVinculacion(cedula, contrasena, nombres, apellidos, telefono, email,
                                        fecha_nacimiento, direccion, carrera)
-        self.coordinadores[nuevo.cedula] = nuevo
-        self.guardar()
+        self.persistencia.insertar(self.ENTIDAD, nuevo)
         return nuevo
 
     def eliminar(self, cedula):
-        coordinador = self.coordinadores.get(cedula)
-        if coordinador is None or coordinador.eliminado:
+        if self.buscar(cedula) is None:
             raise ValueError("No existe un coordinador de vinculación registrado con la cédula ingresada.")
-        coordinador.eliminado = True
-        self.guardar()
+        self.persistencia.marcar_eliminado(self.ENTIDAD, cedula)

@@ -16,10 +16,6 @@ class Administrador:
         self.email = email
         self.eliminado = eliminado
 
-    @staticmethod
-    def buscar_por_usuario(diccionario_administradores, usuario):
-        return diccionario_administradores.get(usuario, None)
-
     def __repr__(self):
         return f"Administrador(usuario='{self.usuario}', email='{self.email}')"
 
@@ -29,34 +25,31 @@ class RepositorioAdministrador:
 
     def __init__(self, persistencia):
         self.persistencia = persistencia
-        self.administradores = self.persistencia.cargar(self.ENTIDAD)
 
     def recargar(self):
-        self.administradores = self.persistencia.cargar(self.ENTIDAD)
+        # Compatibilidad: ya no hay caché en memoria; cada método consulta la BD.
+        pass
 
-    def guardar(self):
-        self.persistencia.guardar(self.ENTIDAD, self.administradores)
+    def actualizar(self, administrador):
+        self.persistencia.actualizar(self.ENTIDAD, administrador)
 
     def listar(self):
-        return list(filter(lambda a: not a.eliminado, self.administradores.values()))
+        return self.persistencia.listar(self.ENTIDAD)
 
     def buscar(self, usuario):
-        admin = Administrador.buscar_por_usuario(self.administradores, usuario)
+        admin = self.persistencia.obtener(self.ENTIDAD, usuario)
         return admin if admin is not None and not admin.eliminado else None
 
     def agregar(self, usuario, contrasena, email):
         if not all([usuario, contrasena, email]):
             raise ValueError("Por favor, complete todos los campos.")
-        if usuario in self.administradores:
+        if self.persistencia.existe(self.ENTIDAD, usuario):
             raise ValueError(f"El administrador con usuario '{usuario}' ya está registrado.")
         nuevo = Administrador(usuario, contrasena, email)
-        self.administradores[nuevo.usuario] = nuevo
-        self.guardar()
+        self.persistencia.insertar(self.ENTIDAD, nuevo)
         return nuevo
 
     def eliminar(self, usuario):
-        admin = self.administradores.get(usuario)
-        if admin is None or admin.eliminado:
+        if self.buscar(usuario) is None:
             raise ValueError("No existe un administrador registrado con el usuario ingresado.")
-        admin.eliminado = True
-        self.guardar()
+        self.persistencia.marcar_eliminado(self.ENTIDAD, usuario)

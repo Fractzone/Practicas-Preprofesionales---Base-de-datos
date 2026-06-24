@@ -10,15 +10,9 @@ class Credencial:
             raise ValueError(f"Rol '{rol}' inválido.")
 
         self.identificador = identificador
-        self.contrasena = contrasena
+        self.contrasena = contrasena  # se almacena cifrada (hash con sal); ver modelo/seguridad.py
         self.rol = rol
         self.eliminado = eliminado
-
-    @staticmethod
-    def autenticar(diccionario_credenciales, identificador, contrasena):
-        credencial = diccionario_credenciales.get(identificador, None)
-        return credencial if (credencial is not None and not credencial.eliminado and
-                              credencial.contrasena == contrasena) else None
 
     def __repr__(self):
         return f"Credencial(identificador='{self.identificador}', rol='{self.rol}')"

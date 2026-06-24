@@ -41,10 +41,6 @@ class Formulario1:
         self.estado_aprobacion = estado_aprobacion
         self.eliminado = eliminado
 
-    @staticmethod
-    def buscar_por_id(diccionario, id_buscado):
-        return diccionario.get(id_buscado, None)
-
     def __repr__(self):
         return f"Formulario1(id='{self.id_formulario1}', practica='{self.id_practica}', estado='{self.estado_aprobacion}')"
 
@@ -54,44 +50,38 @@ class RepositorioFormulario1:
 
     def __init__(self, persistencia):
         self.persistencia = persistencia
-        self.formularios = self.persistencia.cargar(self.ENTIDAD)
 
     def recargar(self):
-        self.formularios = self.persistencia.cargar(self.ENTIDAD)
+        # Compatibilidad: ya no hay caché en memoria; cada método consulta la BD.
+        pass
 
-    def guardar(self):
-        self.persistencia.guardar(self.ENTIDAD, self.formularios)
+    def actualizar(self, formulario):
+        self.persistencia.actualizar(self.ENTIDAD, formulario)
 
     def listar(self):
-        return list(filter(lambda f: not f.eliminado, self.formularios.values()))
+        return self.persistencia.listar(self.ENTIDAD)
 
     def buscar(self, id_formulario1):
-        formulario = Formulario1.buscar_por_id(self.formularios, id_formulario1)
+        formulario = self.persistencia.obtener(self.ENTIDAD, id_formulario1)
         return formulario if formulario is not None and not formulario.eliminado else None
 
-    def siguiente_id(self):
-        return str(max(
-            list(map(int, filter(lambda k: k.isdigit(), self.formularios.keys()))),
-            default=0) + 1)
-
     def buscar_por_practica(self, id_practica):
-        return next(filter(lambda f: f.id_practica == id_practica and not f.eliminado, self.formularios.values()), None)
+        formularios = self.persistencia.listar(self.ENTIDAD, where="id_practica = %s", params=(id_practica,))
+        return formularios[0] if formularios else None
 
     def tiene(self, id_practica):
         return self.buscar_por_practica(id_practica) is not None
 
     def por_estado(self, estado):
-        return list(filter(lambda f: f.estado_aprobacion == estado and not f.eliminado, self.formularios.values()))
+        return self.persistencia.listar(self.ENTIDAD, where="estado_aprobacion = %s", params=(estado,))
 
     def agregar(self, id_practica, tipo_documento, numero_documento, tipo_practica,
                 remuneracion, fecha_inicial, fecha_final_aprox, horas_aprox, actividades):
         if self.tiene(id_practica):
             raise ValueError("El Formulario 1 ya fue registrado para esta práctica.")
-        nuevo_id = self.siguiente_id()
-        nuevo = Formulario1(nuevo_id, id_practica, tipo_documento, numero_documento, tipo_practica,
+        nuevo = Formulario1(None, id_practica, tipo_documento, numero_documento, tipo_practica,
                             remuneracion, fecha_inicial, fecha_final_aprox, horas_aprox, actividades)
-        self.formularios[nuevo_id] = nuevo
-        self.guardar()
+        self.persistencia.insertar(self.ENTIDAD, nuevo)  # la base asigna id_formulario1
         return nuevo
 
 
@@ -142,10 +132,6 @@ class Formulario2:
         self.estado = estado
         self.eliminado = eliminado
 
-    @staticmethod
-    def buscar_por_id(diccionario, id_buscado):
-        return diccionario.get(id_buscado, None)
-
     def __repr__(self):
         return f"Formulario2(id='{self.id_formulario2}', practica='{self.id_practica}')"
 
@@ -155,28 +141,24 @@ class RepositorioFormulario2:
 
     def __init__(self, persistencia):
         self.persistencia = persistencia
-        self.formularios = self.persistencia.cargar(self.ENTIDAD)
 
     def recargar(self):
-        self.formularios = self.persistencia.cargar(self.ENTIDAD)
+        # Compatibilidad: ya no hay caché en memoria; cada método consulta la BD.
+        pass
 
-    def guardar(self):
-        self.persistencia.guardar(self.ENTIDAD, self.formularios)
+    def actualizar(self, formulario):
+        self.persistencia.actualizar(self.ENTIDAD, formulario)
 
     def listar(self):
-        return list(filter(lambda f: not f.eliminado, self.formularios.values()))
+        return self.persistencia.listar(self.ENTIDAD)
 
     def buscar(self, id_formulario2):
-        formulario = Formulario2.buscar_por_id(self.formularios, id_formulario2)
+        formulario = self.persistencia.obtener(self.ENTIDAD, id_formulario2)
         return formulario if formulario is not None and not formulario.eliminado else None
 
-    def siguiente_id(self):
-        return str(max(
-            list(map(int, filter(lambda k: k.isdigit(), self.formularios.keys()))),
-            default=0) + 1)
-
     def buscar_por_practica(self, id_practica):
-        return next(filter(lambda f: f.id_practica == id_practica and not f.eliminado, self.formularios.values()), None)
+        formularios = self.persistencia.listar(self.ENTIDAD, where="id_practica = %s", params=(id_practica,))
+        return formularios[0] if formularios else None
 
     def tiene(self, id_practica):
         return self.buscar_por_practica(id_practica) is not None
@@ -185,11 +167,9 @@ class RepositorioFormulario2:
                 calificaciones_rubrica, productos_relevantes, aspectos_relevantes):
         if self.tiene(id_practica):
             raise ValueError("El Formulario 2 ya fue registrado para esta práctica.")
-        nuevo_id = self.siguiente_id()
-        nuevo = Formulario2(nuevo_id, id_practica, fecha_real_inicio, fecha_real_fin, horas_cumplidas,
+        nuevo = Formulario2(None, id_practica, fecha_real_inicio, fecha_real_fin, horas_cumplidas,
                             calificaciones_rubrica, productos_relevantes, aspectos_relevantes)
-        self.formularios[nuevo_id] = nuevo
-        self.guardar()
+        self.persistencia.insertar(self.ENTIDAD, nuevo)  # la base asigna id_formulario2
         return nuevo
 
 
@@ -247,10 +227,6 @@ class Formulario3:
         return (isinstance(criterio, dict) and isinstance(criterio.get("no_aplica"), bool) and
                 (criterio["no_aplica"] or Validaciones.validar_rango(criterio.get("nivel_alcanzado"), 1, 4)))
 
-    @staticmethod
-    def buscar_por_id(diccionario, id_buscado):
-        return diccionario.get(id_buscado, None)
-
     def __repr__(self):
         return f"Formulario3(id='{self.id_formulario3}', practica='{self.id_practica}', nota={self.calificacion_sobre_100})"
 
@@ -260,28 +236,24 @@ class RepositorioFormulario3:
 
     def __init__(self, persistencia):
         self.persistencia = persistencia
-        self.formularios = self.persistencia.cargar(self.ENTIDAD)
 
     def recargar(self):
-        self.formularios = self.persistencia.cargar(self.ENTIDAD)
+        # Compatibilidad: ya no hay caché en memoria; cada método consulta la BD.
+        pass
 
-    def guardar(self):
-        self.persistencia.guardar(self.ENTIDAD, self.formularios)
+    def actualizar(self, formulario):
+        self.persistencia.actualizar(self.ENTIDAD, formulario)
 
     def listar(self):
-        return list(filter(lambda f: not f.eliminado, self.formularios.values()))
+        return self.persistencia.listar(self.ENTIDAD)
 
     def buscar(self, id_formulario3):
-        formulario = Formulario3.buscar_por_id(self.formularios, id_formulario3)
+        formulario = self.persistencia.obtener(self.ENTIDAD, id_formulario3)
         return formulario if formulario is not None and not formulario.eliminado else None
 
-    def siguiente_id(self):
-        return str(max(
-            list(map(int, filter(lambda k: k.isdigit(), self.formularios.keys()))),
-            default=0) + 1)
-
     def buscar_por_practica(self, id_practica):
-        return next(filter(lambda f: f.id_practica == id_practica and not f.eliminado, self.formularios.values()), None)
+        formularios = self.persistencia.listar(self.ENTIDAD, where="id_practica = %s", params=(id_practica,))
+        return formularios[0] if formularios else None
 
     def tiene(self, id_practica):
         return self.buscar_por_practica(id_practica) is not None
@@ -289,8 +261,6 @@ class RepositorioFormulario3:
     def agregar(self, id_practica, campo_ocupacional, calificacion_sobre_100, evaluacion_escenario):
         if self.tiene(id_practica):
             raise ValueError("El Formulario 3 ya fue registrado para esta práctica.")
-        nuevo_id = self.siguiente_id()
-        nuevo = Formulario3(nuevo_id, id_practica, campo_ocupacional, calificacion_sobre_100, evaluacion_escenario)
-        self.formularios[nuevo_id] = nuevo
-        self.guardar()
+        nuevo = Formulario3(None, id_practica, campo_ocupacional, calificacion_sobre_100, evaluacion_escenario)
+        self.persistencia.insertar(self.ENTIDAD, nuevo)  # la base asigna id_formulario3
         return nuevo

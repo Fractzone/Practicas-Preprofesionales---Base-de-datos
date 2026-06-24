@@ -14,9 +14,13 @@ seguimiento/evaluación y el cierre con la nota final.
 
 - **Lenguaje:** Python 3.
 - **Interfaz gráfica:** PyQt6 (estilo de Qt Designer).
-- **Persistencia:** archivos locales `.dat` (serialización con `pickle`).
-- **Arranque:** `python main.py`. En el primer arranque se crea automáticamente el usuario
-  administrador (`admin` / `admin`); desde ahí se registran los demás usuarios.
+- **Persistencia:** base de datos **PostgreSQL** (acceso con `psycopg2`). El esquema declara
+  integridad referencial (claves foráneas), restricciones (`NOT NULL`, `UNIQUE`, `CHECK`),
+  longitudes (`VARCHAR(n)`) y tipos apropiados (`DATE`, `JSONB`). El acceso a datos se hace con
+  consultas SQL puntuales (`SELECT/INSERT/UPDATE` con `WHERE`), no cargando tablas enteras en memoria.
+- **Arranque:** `python main.py`. En el primer arranque la aplicación **crea el esquema, las tablas,
+  los índices y las vistas** (de forma idempotente) y siembra el usuario administrador
+  (`admin` / `admin`) más datos de ejemplo; desde ahí se registran los demás usuarios.
 
 ---
 
@@ -28,7 +32,7 @@ El proyecto separa responsabilidades en tres capas más una de persistencia:
 modelo/        → Datos y reglas de negocio (entidades + repositorios + validaciones)
 vista/         → Interfaz gráfica (pantallas y sus configuraciones)
 controlador/   → Orquesta: conecta lo que el usuario hace en la vista con el modelo
-persistencia/  → Guarda y carga los datos en disco (genérico, con pickle)
+persistencia/  → Acceso a PostgreSQL (gestor genérico con SQL puntual) + DDL del esquema
 main.py        → Punto de entrada: arranca la aplicación y muestra el login
 ```
 
@@ -39,17 +43,39 @@ controlador es el intermediario. Esto hace el código ordenado y fácil de mante
 Cada archivo del modelo contiene **dos cosas**:
 1. La **clase de la entidad** (p. ej. `Estudiante`), que en su constructor **valida** sus datos
    (cédula, correo, etc.) y lanza un error si algo está mal.
-2. Su **repositorio** (p. ej. `RepositorioEstudiante`), que es el responsable de **guardar,
-   cargar, listar, buscar, agregar y eliminar** registros de esa entidad. El repositorio es el
-   único que toca el "diccionario" de datos.
+2. Su **repositorio** (p. ej. `RepositorioEstudiante`), que es el responsable de **listar,
+   buscar, agregar, actualizar y eliminar** registros de esa entidad. El repositorio es el
+   **único lugar donde vive el SQL** (patrón Repository/DAO): traduce cada operación a una
+   consulta puntual (`obtener`, `listar(where=...)`, `insertar`, `actualizar`, `marcar_eliminado`)
+   que ejecuta el gestor de persistencia. La vista y el controlador no escriben SQL.
 
 Las **validaciones de ingreso viven en el repositorio/entidad**, no en el controlador. Si un dato
 es inválido, el modelo lanza un `ValueError` con un mensaje claro, y el controlador lo muestra.
 
 ### 2.2 Capa de persistencia
-`GestorPersistencia` es genérico: sabe guardar y cargar un diccionario en un archivo `<entidad>.dat`
-usando `pickle`. No conoce las entidades concretas; cada repositorio le dice qué archivo usar.
-Los archivos se crean solos en `persistencia/datos/` al ejecutar.
+`GestorPersistencia` (en `persistencia/gestor_persistencia.py`) es genérico y es el **único punto
+de acceso a PostgreSQL**. A partir de un diccionario `MAPEO` (que describe cada tabla: columnas,
+tipos, restricciones, claves foráneas, `CHECK` e índices) ofrece **primitivas SQL puntuales** a los
+repositorios:
+
+- `obtener(entidad, clave)` → `SELECT ... WHERE pk = %s`.
+- `listar(entidad, where=None, params=(), orden=None)` → `SELECT ... [WHERE ...] [ORDER BY ...]`
+  (por defecto excluye los marcados como eliminados).
+- `insertar(entidad, objeto)` → `INSERT`. Para las tablas con id generado por la base
+  (`GENERATED ALWAYS AS IDENTITY`) usa `INSERT ... RETURNING` y asigna el id al objeto.
+- `actualizar(entidad, objeto)` → `UPDATE ... SET ... WHERE pk = %s` (UPDATE real, no upsert).
+- `marcar_eliminado(s)` / `marcar_eliminados_por(columna, valores)` → borrado lógico en lote.
+- `consultar(sql, params)` → SQL libre para los `JOIN` (vistas).
+- `transaccion()` → *context manager* que agrupa varias escrituras en una sola transacción atómica.
+
+Las fechas se manejan en la app como texto `dd/MM/yyyy` pero se almacenan como `DATE`; la conversión
+está centralizada en `_hacia_bd`/`_desde_bd`, así el resto del proyecto no cambia. El dinero y la
+nota se guardan como `NUMERIC`; las estructuras anidadas (actividades, rúbricas, datos de empresa)
+como `JSONB`; las contraseñas, **cifradas** (hash con sal; ver `modelo/seguridad.py`). Los
+identificadores subrogados (oferta, postulación, práctica, solicitud, formularios) los **genera la
+base** (IDENTITY), no la aplicación. La conexión se configura por variables de entorno en
+`persistencia/config_bd.py`. El esquema completo está en `persistencia/esquema_postgresql.sql`,
+espejo fiel del DDL que crea la aplicación.
 
 ### 2.3 Capa de vista
 Cada pantalla tiene dos partes:
@@ -94,8 +120,8 @@ tooltip de ayuda). El login identifica el rol y abre el panel correspondiente.
 | `Postulacion` | id numérico | Vincula un estudiante con una oferta y guarda su estado. |
 | `Practica` | id numérico | Se crea al aceptar a un estudiante; referencia a la postulación y a los dos tutores. |
 | `Formulario1/2/3` | id numérico | Un formulario de cada tipo por práctica. |
-| `Solicitud` | id numérico | Solicitudes especiales del estudiante. |
-| `Credencial` | identificador | Usuario + contraseña + rol; vive en `login.dat`. |
+| `Solicitud` | id numérico | Solicitudes especiales del estudiante (con `datos_empresa` en `JSONB`). |
+| `Credencial` | identificador | Usuario + contraseña + rol; vive en la tabla `login`. |
 
 **Relaciones clave:**
 - Una **empresa** y su **tutor empresarial** son la misma entidad (no existe una clase `Empresa`
@@ -104,6 +130,34 @@ tooltip de ayuda). El login identifica el rol y abre el panel correspondiente.
 - Una **postulación** une estudiante ↔ oferta.
 - Una **práctica** nace de una postulación aceptada y guarda los dos tutores (cédulas reales).
 - Cada **formulario** pertenece a una práctica.
+
+### 4.1 Integridad en la base de datos
+Las personas conservan su **clave natural** (cédula, usuario), pero los identificadores de los
+registros del proceso (oferta, postulación, práctica, solicitud, formularios) son **subrogados y los
+genera la base** con `GENERATED ALWAYS AS IDENTITY` (no se calculan en la aplicación). La base de
+datos **hace cumplir** las reglas que antes solo vivían en Python:
+
+- **Identidad:** PK naturales (`usuario`, `cedula`) y PK subrogadas `INTEGER IDENTITY` para el
+  proceso; la app las recupera con `INSERT ... RETURNING`.
+- **Claves foráneas (sin `ON DELETE CASCADE`, porque el borrado es lógico):**
+  `oferta.ruc_empresa → tutor_empresarial.ruc_empresa`,
+  `postulacion.cedula_estudiante → estudiante`, `postulacion.id_oferta → oferta`,
+  `postulacion.id_coordinador → coordinador_vinculacion` (nullable),
+  `practica.id_postulacion → postulacion`, `practica.id_tutor_academico/empresarial` (nullables),
+  `solicitud.cedula_estudiante → estudiante`, `formulario1/2/3.id_practica → practica`.
+  `login.identificador` **no** lleva FK (puede apuntar a cualquier tabla de usuario).
+- **`UNIQUE`:** `tutor_empresarial.ruc_empresa` (una empresa = un tutor empresarial, necesario para
+  la FK de `oferta`) y `email` en estudiante/tutores/coordinador.
+- **`CHECK`:** estados de postulación, práctica, solicitud y formularios; tipo de solicitud;
+  `ciclo BETWEEN 1 AND 10`; contadores y montos no negativos; nota entre 0 y 100.
+- **Tipos:** fechas `DATE`, dinero/nota `NUMERIC` (no coma flotante), anidados `JSONB`,
+  contraseñas **cifradas** (`VARCHAR(255)` con hash + sal).
+- **Índices** sobre las columnas que más se filtran (FK y estados).
+- **Vistas** (`vista_postulacion_detalle`, `vista_practica_detalle`, `vista_oferta_detalle`) que
+  concentran los `JOIN` de los listados de la interfaz en la base de datos.
+- **Transacciones por caso de uso:** las operaciones que tocan varias tablas (aceptar estudiante +
+  crear práctica, asentar nota + acreditar horas, alta de usuario + credencial, borrado en cascada)
+  se ejecutan dentro de `gestor.transaccion()` para que sean atómicas.
 
 ### Familia "Coordinador" (única herencia del proyecto)
 Los tres tipos de coordinador/tutor (académico, empresarial y de vinculación) comparten campos
@@ -115,13 +169,16 @@ mantiene un estilo plano (sin herencia) para que sea sencillo.
 
 ## 5. Login y credenciales
 
-Las credenciales se guardan **separadas** del resto, en `login.dat`, como objetos `Credencial`
+Las credenciales se guardan **separadas** del resto, en la tabla `login`, como objetos `Credencial`
 (`identificador`, `contraseña`, `rol`). El **identificador** es la **cédula** para estudiante,
 tutores y coordinador; y el **usuario** para el administrador. Al dar de alta o de baja a un
-usuario, el sistema mantiene `login.dat` sincronizado automáticamente.
+usuario, el sistema mantiene la tabla `login` sincronizada automáticamente
+(`controlador/sincronizador_credenciales.py`), dentro de la misma transacción que el alta/baja.
 
-En el primer arranque solo existe el administrador **`admin` / `admin`**; desde su panel se crean
-los demás usuarios.
+Las contraseñas **se almacenan cifradas** (hash PBKDF2 con sal, `modelo/seguridad.py`): nunca en
+texto plano. El login verifica con `verificar_password(...)` y las tablas de gestión de usuarios
+no muestran la contraseña (la enmascaran). En el primer arranque solo existe el administrador
+**`admin` / `admin`**; desde su panel se crean los demás usuarios.
 
 ---
 
@@ -162,7 +219,8 @@ Evaluación Final" solo cuando la práctica está "En Ejecución").
 ## 8. Los tres formularios digitales
 
 En vez de subir archivos, los formularios son **digitales y estructurados** (cada uno es una clase
-con su repositorio y su `.dat`), uno de cada tipo por práctica:
+con su repositorio y su tabla; las rúbricas/actividades se guardan como `JSONB`), uno de cada tipo
+por práctica:
 
 - **Formulario 1 – Registro de PPP** (lo llena el estudiante): tipo de documento, tipo de práctica,
   fechas, horas y plan de actividades.
@@ -205,6 +263,11 @@ La eliminación es **en cascada**:
 - Al eliminar un administrador, tutor académico o coordinador de vinculación, solo se da de baja a
   ese usuario (no se anulan las prácticas de los estudiantes por dar de baja a un supervisor).
 
+La cascada (`controlador/eliminacion_cascada.py`) lee los registros relacionados con los
+repositorios (SQL con `WHERE`) y los marca en lote con `UPDATE ... SET eliminado = TRUE WHERE
+columna = ANY(...)`. Cada cascada se ejecuta en una **única transacción** (un solo `commit` al
+final, o `rollback` si algo falla), de modo que nunca queda una eliminación a medias.
+
 Ventaja: se conserva el histórico y se evita dejar datos "huérfanos".
 
 ---
@@ -233,7 +296,7 @@ Ventaja: se conserva el histórico y se evita dejar datos "huérfanos".
 
 ```
 main.py                  # arranque de la aplicación
-persistencia/            # gestor genérico + carpeta datos/ (.dat en runtime)
+persistencia/            # gestor de acceso a PostgreSQL + config_bd.py + esquema_postgresql.sql
 modelo/                  # entidades + repositorios + validaciones
 controlador/             # un controlador por rol/módulo + utilidades (sincronizador, cascada)
 vista/
@@ -250,7 +313,9 @@ vista/
 
 ## 13. Cómo ejecutar
 
-1. Tener Python 3 y PyQt6 instalados (el proyecto incluye un entorno virtual `.venv/`).
-2. Ejecutar `python main.py` desde la carpeta raíz.
-3. Iniciar sesión con `admin` / `admin` y registrar los usuarios necesarios.
-4. Los archivos `.dat` se crean solos en `persistencia/datos/` en el primer uso.
+1. Tener un servidor **PostgreSQL** en ejecución y crear la base de datos (ver `README.md`);
+   ajustar la conexión en `persistencia/config_bd.py` si hace falta.
+2. Tener Python 3 con PyQt6 y `psycopg2` instalados (ver `requirements.txt`).
+3. Ejecutar `python main.py` desde la carpeta raíz: en el primer arranque se crean el esquema,
+   las tablas, los índices, las vistas y los datos de ejemplo automáticamente.
+4. Iniciar sesión con `admin` / `admin` y registrar los usuarios necesarios.

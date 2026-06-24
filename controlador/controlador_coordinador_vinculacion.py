@@ -3,6 +3,7 @@ from modelo.proceso import RepositorioPostulacion, RepositorioOferta, Repositori
 from modelo.estudiante import RepositorioEstudiante
 from modelo.coordinadores import RepositorioTutorEmpresarial, TutorEmpresarial
 from controlador.sincronizador_credenciales import SincronizadorCredenciales
+from controlador.utilidades_controlador import parsear_id
 from controlador import eliminacion_cascada
 from vista.ventanas_generales.vista_error import VistaError
 from vista.ventanas_generales.vista_informacion import VistaInformacion
@@ -92,17 +93,16 @@ class ControladorCoordinadorVinculacion:
         empresa = self.repo_empresas.buscar_por_ruc(oferta.ruc_empresa) if oferta else None
         return empresa.nombre_empresa if empresa else "N/A"
 
-    def fila_validacion(self, post):
-        estudiante = self.repo_estudiantes.buscar(post.cedula_estudiante)
-        oferta = self.repo_ofertas.buscar(post.id_oferta)
+    def fila_validacion(self, d):
+        # d proviene de un JOIN (vista_postulacion_detalle).
         return [
-            post.id_postulacion,
-            estudiante.cedula if estudiante else "N/A",
-            self.nombre_completo(estudiante),
-            str(estudiante.ciclo) if estudiante else "N/A",
-            str(estudiante.num_practicas_realizadas) if estudiante else "N/A",
-            f"{oferta.puesto} - {self.nombre_empresa(oferta)}" if oferta else "N/A",
-            post.estado_validacion
+            d["id_postulacion"],
+            d["cedula_estudiante"],
+            f'{d["est_nombres"]} {d["est_apellidos"]}',
+            str(d["est_ciclo"]),
+            str(d["est_num_practicas"]),
+            f'{d["oferta_puesto"]} - {d["nombre_empresa"]}',
+            d["estado_validacion"]
         ]
 
     def fila_terna(self, post):
@@ -134,15 +134,12 @@ class ControladorCoordinadorVinculacion:
                 sol["motivo"], sol["estado"], sol["fecha"]]
 
     def refrescar_tabla_validacion(self):
-        self.cargar_datos()
-        pendientes = self.repo_postulaciones.por_estado("Pendiente")
+        pendientes = self.repo_postulaciones.detalle_pendientes()
         self.pintar_tabla(self.v_validar.tblPostulaciones, pendientes, self.fila_validacion)
 
     def slot_aprobar(self):
-        id_postulacion = self.v_validar.txtIdPostulacion.text().strip()
         try:
-            if not id_postulacion:
-                raise ValueError("Ingrese el ID de la postulación.")
+            id_postulacion = parsear_id(self.v_validar.txtIdPostulacion.text(), "ID de la postulación")
             postulacion = self.repo_postulaciones.buscar(id_postulacion)
             if not postulacion:
                 raise ValueError(f"No se encontró la postulación con ID '{id_postulacion}'.")
@@ -155,7 +152,7 @@ class ControladorCoordinadorVinculacion:
                 raise ValueError(f"El estudiante cursa el ciclo {estudiante.ciclo}. Se requiere mínimo {self.CICLO_MINIMO}to ciclo.")
             postulacion.estado_validacion = "Validada"
             postulacion.id_coordinador = self.cedula_coordinador
-            self.repo_postulaciones.guardar()
+            self.repo_postulaciones.actualizar(postulacion)
             self.refrescar_tabla_validacion()
             QMessageBox.information(self.v_validar, "Éxito", f"Postulación {id_postulacion} aprobada.")
             self.v_validar.txtIdPostulacion.clear()
@@ -163,17 +160,15 @@ class ControladorCoordinadorVinculacion:
             VistaError(str(e), self.v_validar).exec()
 
     def slot_rechazar(self):
-        id_postulacion = self.v_validar.txtIdPostulacion.text().strip()
         try:
-            if not id_postulacion:
-                raise ValueError("Ingrese el ID de la postulación.")
+            id_postulacion = parsear_id(self.v_validar.txtIdPostulacion.text(), "ID de la postulación")
             postulacion = self.repo_postulaciones.buscar(id_postulacion)
             if not postulacion:
                 raise ValueError(f"No se encontró la postulación con ID '{id_postulacion}'.")
             if postulacion.estado_validacion != "Pendiente":
                 raise ValueError(f"La postulación ya fue procesada. Estado actual: {postulacion.estado_validacion}.")
             postulacion.estado_validacion = "Rechazada"
-            self.repo_postulaciones.guardar()
+            self.repo_postulaciones.actualizar(postulacion)
             self.refrescar_tabla_validacion()
             QMessageBox.information(self.v_validar, "Éxito", f"Postulación {id_postulacion} rechazada.")
             self.v_validar.txtIdPostulacion.clear()
@@ -198,10 +193,11 @@ class ControladorCoordinadorVinculacion:
         self.pintar_tabla(self.v_ternas.tblPostulaciones, validadas, self.fila_terna)
 
     def slot_enviar_terna(self):
-        ids = list(filter(None, map(lambda w: w.text().strip(), [
-            self.v_ternas.txtIdPostulante1, self.v_ternas.txtIdPostulante2, self.v_ternas.txtIdPostulante3])))
-        id_oferta = self.v_ternas.cmbOfertas.currentData()
         try:
+            ids = [parsear_id(w.text(), "ID de postulación")
+                   for w in (self.v_ternas.txtIdPostulante1, self.v_ternas.txtIdPostulante2,
+                             self.v_ternas.txtIdPostulante3) if w.text().strip()]
+            id_oferta = self.v_ternas.cmbOfertas.currentData()
             if not id_oferta:
                 raise ValueError("Debe seleccionar una oferta.")
             if len(ids) < 1:
@@ -211,15 +207,16 @@ class ControladorCoordinadorVinculacion:
             terna = list(map(self.repo_postulaciones.buscar, ids))
             no_encontradas = list(filter(lambda x: x[1] is None, zip(ids, terna)))
             if no_encontradas:
-                raise ValueError(f"No se encontraron: {', '.join(map(lambda x: x[0], no_encontradas))}.")
+                raise ValueError(f"No se encontraron: {', '.join(map(lambda x: str(x[0]), no_encontradas))}.")
             fuera_de_oferta = list(filter(lambda p: p.id_oferta != id_oferta, terna))
             if fuera_de_oferta:
                 raise ValueError("Todas las postulaciones de la terna deben pertenecer a la oferta seleccionada.")
             no_validadas = list(filter(lambda p: p.estado_validacion != "Validada", terna))
             if no_validadas:
-                raise ValueError(f"No están 'Validada': {', '.join(map(lambda p: p.id_postulacion, no_validadas))}.")
+                raise ValueError(f"No están 'Validada': {', '.join(map(lambda p: str(p.id_postulacion), no_validadas))}.")
             list(map(lambda p: setattr(p, 'estado_validacion', 'Enviada'), terna))
-            self.repo_postulaciones.guardar()
+            with self.persistencia.transaccion():
+                list(map(self.repo_postulaciones.actualizar, terna))
             self.slot_filtrar_por_oferta()
             QMessageBox.information(self.v_ternas, "Éxito",
                                     f"Terna de {len(terna)} postulante(s) enviada para la oferta {id_oferta}.")
@@ -243,18 +240,19 @@ class ControladorCoordinadorVinculacion:
         try:
             if SincronizadorCredenciales.existe_activo(self.persistencia, self.v_empresas.txtCedula.text().strip()):
                 raise ValueError("Ya existe un usuario activo con esa cédula.")
-            nuevo = self.repo_empresas.agregar(
-                self.v_empresas.txtCedula.text().strip(),
-                self.v_empresas.txtContrasena.text().strip(),
-                self.v_empresas.txtNombres.text().strip(),
-                self.v_empresas.txtApellidos.text().strip(),
-                self.v_empresas.txtTelefono.text().strip(),
-                self.v_empresas.txtEmail.text().strip(),
-                self.v_empresas.txtCargo.text().strip(),
-                self.v_empresas.txtRUC.text().strip(),
-                self.v_empresas.txtNombreEmpresa.text().strip(),
-                self.v_empresas.txtDireccionEmpresa.text().strip())
-            SincronizadorCredenciales.agregar(self.persistencia, nuevo.cedula, nuevo.contrasena, TutorEmpresarial.ROL)
+            with self.persistencia.transaccion():
+                nuevo = self.repo_empresas.agregar(
+                    self.v_empresas.txtCedula.text().strip(),
+                    self.v_empresas.txtContrasena.text().strip(),
+                    self.v_empresas.txtNombres.text().strip(),
+                    self.v_empresas.txtApellidos.text().strip(),
+                    self.v_empresas.txtTelefono.text().strip(),
+                    self.v_empresas.txtEmail.text().strip(),
+                    self.v_empresas.txtCargo.text().strip(),
+                    self.v_empresas.txtRUC.text().strip(),
+                    self.v_empresas.txtNombreEmpresa.text().strip(),
+                    self.v_empresas.txtDireccionEmpresa.text().strip())
+                SincronizadorCredenciales.agregar(self.persistencia, nuevo.cedula, nuevo.contrasena, TutorEmpresarial.ROL)
             self.refrescar_tabla_empresas()
             QMessageBox.information(self.v_empresas, "Éxito",
                                     f"Empresa '{nuevo.nombre_empresa}' y su tutor empresarial registrados.")
@@ -273,9 +271,10 @@ class ControladorCoordinadorVinculacion:
             if not VistaConfirmacion.confirmar(
                     f"¿Está seguro que desea eliminar a {empresa.nombre_empresa} (cédula {cedula})?", self.v_empresas):
                 return
-            self.repo_empresas.eliminar(cedula)
-            SincronizadorCredenciales.eliminar(self.persistencia, cedula)
-            eliminacion_cascada.por_empresa(self.persistencia, cedula, empresa.ruc_empresa)
+            with self.persistencia.transaccion():
+                self.repo_empresas.eliminar(cedula)
+                SincronizadorCredenciales.eliminar(self.persistencia, cedula)
+                eliminacion_cascada.por_empresa(self.persistencia, cedula, empresa.ruc_empresa)
             self.refrescar_tabla_empresas()
             QMessageBox.information(self.v_empresas, "Éxito",
                                     "Tutor empresarial eliminado. Sus ofertas, postulaciones y prácticas también se dieron de baja.")
@@ -296,15 +295,15 @@ class ControladorCoordinadorVinculacion:
         self.pintar_tabla(self.v_bandeja.tblSolicitudes, self.repo_solicitudes.listar(), self.fila_solicitud)
 
     def slot_aprobar_solicitud(self):
-        id_solicitud = self.v_bandeja.txtIdSolicitud.text().strip()
         try:
+            id_solicitud = parsear_id(self.v_bandeja.txtIdSolicitud.text(), "ID de la solicitud")
             solicitud = self.repo_solicitudes.buscar(id_solicitud)
             if solicitud is None:
                 raise ValueError(f"No se encontró la solicitud con ID '{id_solicitud}'.")
             if solicitud["estado"] != "Pendiente":
                 raise ValueError(f"La solicitud ya fue procesada. Estado actual: {solicitud['estado']}.")
             solicitud["estado"] = "Aprobada"
-            self.repo_solicitudes.guardar()
+            self.repo_solicitudes.actualizar(solicitud)
             self.refrescar_tabla_solicitudes()
             self.v_bandeja.txtIdSolicitud.clear()
             if solicitud["tipo"] == self.TIPO_EMPRESA_PROPIA:
@@ -319,15 +318,15 @@ class ControladorCoordinadorVinculacion:
             VistaError(str(e), self.v_bandeja).exec()
 
     def slot_rechazar_solicitud(self):
-        id_solicitud = self.v_bandeja.txtIdSolicitud.text().strip()
         try:
+            id_solicitud = parsear_id(self.v_bandeja.txtIdSolicitud.text(), "ID de la solicitud")
             solicitud = self.repo_solicitudes.buscar(id_solicitud)
             if solicitud is None:
                 raise ValueError(f"No se encontró la solicitud con ID '{id_solicitud}'.")
             if solicitud["estado"] != "Pendiente":
                 raise ValueError(f"La solicitud ya fue procesada. Estado actual: {solicitud['estado']}.")
             solicitud["estado"] = "Rechazada"
-            self.repo_solicitudes.guardar()
+            self.repo_solicitudes.actualizar(solicitud)
             self.refrescar_tabla_solicitudes()
             QMessageBox.information(self.v_bandeja, "Éxito", f"Solicitud {id_solicitud} rechazada.")
             self.v_bandeja.txtIdSolicitud.clear()

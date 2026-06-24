@@ -7,6 +7,7 @@ from modelo.estudiante import RepositorioEstudiante
 from modelo.formulario import RepositorioFormulario2
 from vista.ventanas_generales.vista_error import VistaError
 from vista.ventanas_generales.vista_informacion import VistaInformacion
+from controlador.utilidades_controlador import parsear_id
 from vista.vista_modulo_tutor_empresarial.interfaz_vista_modulo_tutor_empresarial import (
     VistaTutorEmpresarialPrincipal, VistaCrearOferta, VistaRecibirTernas, VistaFormulario2,
     VistaListarPracticasActivas
@@ -94,15 +95,14 @@ class ControladorTutorEmpresarial:
         post = self.repo_postulaciones.buscar(practica.id_postulacion) if practica else None
         return self.repo_estudiantes.buscar(post.cedula_estudiante) if post else None
 
-    def fila_practica_activa(self, practica):
-        estudiante = self.estudiante_de_practica(practica)
-        academico = self.repo_academicos.buscar(practica.id_tutor_academico)
-        return [practica.id_practica, self.nombre_completo(estudiante),
-                self.nombre_completo(academico), practica.estado, practica.fecha_inicio]
+    def fila_practica_activa(self, d):
+        # d proviene de un JOIN (vista_practica_detalle).
+        academico = f'{d["acad_nombres"]} {d["acad_apellidos"]}' if d["acad_nombres"] else "N/A"
+        return [d["id_practica"], f'{d["est_nombres"]} {d["est_apellidos"]}',
+                academico, d["estado"], d["fecha_inicio"]]
 
     def refrescar_practicas_activas(self):
-        self.cargar_datos()
-        activas = self.repo_practicas.por_tutor_empresarial(self.cedula_tutor, Practica.ESTADOS_ACTIVA)
+        activas = self.repo_practicas.detalle_por_tutor_empresarial(self.cedula_tutor, Practica.ESTADOS_ACTIVA)
         self.pintar_tabla(self.v_practicas.tblPracticas, activas, self.fila_practica_activa)
 
     def preparar_ofertas(self):
@@ -147,10 +147,8 @@ class ControladorTutorEmpresarial:
         return oferta is not None and oferta.ruc_empresa == ruc
 
     def slot_aceptar_estudiante(self):
-        id_post = self.v_ternas.txtIdPostulacionAceptar.text().strip()
         try:
-            if not id_post:
-                raise ValueError("Ingrese el ID de la postulación.")
+            id_post = parsear_id(self.v_ternas.txtIdPostulacionAceptar.text(), "ID de la postulación")
             postulacion = self.repo_postulaciones.buscar(id_post)
             if not postulacion:
                 raise ValueError(f"No se encontró la postulación '{id_post}'.")
@@ -162,11 +160,12 @@ class ControladorTutorEmpresarial:
             estudiante = self.repo_estudiantes.buscar(postulacion.cedula_estudiante)
             academico = self.asignar_academico(estudiante)
             postulacion.estado_validacion = "Aceptada"
-            self.repo_postulaciones.guardar()
-            nueva = self.repo_practicas.agregar(
-                datetime.now().strftime("%d/%m/%Y"), "", Practica.EN_PROGRESO,
-                postulacion.id_postulacion,
-                academico.cedula if academico else None, self.cedula_tutor)
+            with self.persistencia.transaccion():
+                self.repo_postulaciones.actualizar(postulacion)
+                nueva = self.repo_practicas.agregar(
+                    datetime.now().strftime("%d/%m/%Y"), "", Practica.EN_PROGRESO,
+                    postulacion.id_postulacion,
+                    academico.cedula if academico else None, self.cedula_tutor)
             self.refrescar_tabla_ternas()
             aviso = f"Estudiante aceptado. Práctica creada con ID: {nueva.id_practica}."
             if academico is None:
@@ -187,8 +186,8 @@ class ControladorTutorEmpresarial:
 
     def slot_cargar_form2(self):
         self.cargar_datos()
-        id_practica = self.v_form2.txtIdPractica.text().strip()
         try:
+            id_practica = parsear_id(self.v_form2.txtIdPractica.text(), "ID de la práctica")
             practica = self.repo_practicas.buscar(id_practica)
             if not practica:
                 raise ValueError(f"No se encontró la práctica con ID '{id_practica}'.")
@@ -221,8 +220,8 @@ class ControladorTutorEmpresarial:
                   self.v_form2.lblTutorVal, self.v_form2.lblCargoTelVal]))
 
     def slot_guardar_form2(self):
-        id_practica = self.v_form2.txtIdPractica.text().strip()
         try:
+            id_practica = parsear_id(self.v_form2.txtIdPractica.text(), "ID de la práctica")
             practica = self.repo_practicas.buscar(id_practica)
             if not practica:
                 raise ValueError(f"No se encontró la práctica con ID '{id_practica}'.")
@@ -230,16 +229,17 @@ class ControladorTutorEmpresarial:
                 raise ValueError("Esta práctica no está asignada a su empresa.")
             if practica.estado != Practica.EVALUACION_SOLICITADA:
                 raise ValueError(f"No es posible evaluar. Estado actual de la práctica: {practica.estado}.")
-            self.repo_formularios2.agregar(
-                id_practica,
-                self.v_form2.dtFechaRealInicio.date().toString("dd/MM/yyyy"),
-                self.v_form2.dtFechaRealFin.date().toString("dd/MM/yyyy"),
-                self.v_form2.spnHorasCumplidas.value(),
-                self.v_form2.calificaciones(),
-                self.v_form2.txaProductosRelevantes.toPlainText().strip(),
-                self.v_form2.txaAspectosRelevantes.toPlainText().strip())
             practica.estado = Practica.PENDIENTE_NOTA
-            self.repo_practicas.guardar()
+            with self.persistencia.transaccion():
+                self.repo_formularios2.agregar(
+                    id_practica,
+                    self.v_form2.dtFechaRealInicio.date().toString("dd/MM/yyyy"),
+                    self.v_form2.dtFechaRealFin.date().toString("dd/MM/yyyy"),
+                    self.v_form2.spnHorasCumplidas.value(),
+                    self.v_form2.calificaciones(),
+                    self.v_form2.txaProductosRelevantes.toPlainText().strip(),
+                    self.v_form2.txaAspectosRelevantes.toPlainText().strip())
+                self.repo_practicas.actualizar(practica)
             QMessageBox.information(self.v_form2, "Éxito",
                                     "Formulario 2 guardado. La práctica pasa a 'Pendiente Nota'.")
             self.v_form2.txtIdPractica.clear()
