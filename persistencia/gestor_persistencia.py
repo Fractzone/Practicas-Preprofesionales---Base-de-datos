@@ -1,54 +1,49 @@
 """
-Gestor de persistencia respaldado por PostgreSQL.
+Gestor de persistencia respaldado por PostgreSQL (sobre SQLAlchemy 2.0).
 
-Punto único de acceso a la base de datos. El esquema declara integridad
-referencial (claves foráneas), restricciones (NOT NULL, UNIQUE, CHECK), longitudes
-(VARCHAR), tipos apropiados (DATE, NUMERIC, JSONB) e identificadores subrogados
-generados por la base (columnas IDENTITY). El acceso a datos se hace con consultas
-SQL puntuales: SELECT/INSERT/UPDATE con WHERE, INSERT ... RETURNING para los ids
-generados, y UPDATE real (no upsert) para modificar filas existentes.
+Punto único de acceso a la base de datos. El esquema y el mapeo objeto↔tabla se
+declaran con SQLAlchemy Core (objetos `Table`) y el mapeo a las clases del modelo
+se hace de forma **imperativa** (`registry.map_imperatively`): las clases de
+`modelo/` permanecen intactas (no importan SQLAlchemy ni heredan de ninguna base),
+de modo que la separación por capas se conserva.
 
-El borrado es lógico (columna `eliminado`); las claves foráneas son normales y la
-cascada lógica vive en el código (controlador/eliminacion_cascada.py).
+SQLAlchemy se encarga de:
+  - Crear el esquema/tablas/índices/restricciones (FK, UNIQUE, CHECK, IDENTITY).
+  - Materializar las filas como objetos del modelo SIN llamar a `__init__` (no se
+    revalidan datos ya guardados), igual que la implementación manual anterior.
+  - Convertir tipos mediante `TypeDecorator`:
+        * FechaTexto  -> las fechas viajan como texto "dd/MM/yyyy" en la aplicación
+                         y como DATE en la base.
+        * ContrasenaHash -> las contraseñas se cifran (hash con sal) al escribir.
+        * JSONB       -> tipo nativo de PostgreSQL para diccionarios/listas.
+
+La API pública de esta clase NO cambia (obtener, existe, listar, insertar,
+actualizar, marcar_eliminado(s)(_por), consultar, transaccion, ...), por lo que
+los repositorios y controladores no se ven afectados.
 
 Transacciones
 -------------
 Cada operación de escritura confirma por sí sola, salvo que se ejecute dentro de
 `with gestor.transaccion():`, en cuyo caso todas las escrituras del bloque se
-confirman juntas (o se revierten con rollback si algo falla). Esto permite que las
-operaciones de negocio que tocan varias tablas (aceptar estudiante + crear
-práctica, asentar nota + acreditar horas, alta de usuario + credencial, borrado en
-cascada) sean atómicas.
+confirman juntas (o se revierten con rollback si algo falla). Admite anidamiento
+(solo el bloque más externo confirma).
 
-Estructura de MAPEO
--------------------
-Cada entidad declara:
-    - "tabla":   nombre de la tabla.
-    - "clase":   clase del modelo a reconstruir (o None si es un dict plano, como
-                 'solicitud').
-    - "clave":   columna usada como clave primaria.
-    - "columnas": lista de (nombre, tipo_sql, restriccion_inline). La restricción
-                 inline incluye PRIMARY KEY, NOT NULL, UNIQUE, GENERATED ... IDENTITY, etc.
-    - "checks":  lista de expresiones CHECK a nivel de tabla.
-    - "fks":     lista de (columna_local, tabla_referenciada, columna_referenciada).
-    - "indices": lista de listas de columnas a indexar.
-
-Las fechas se manejan en la aplicación como texto "dd/MM/yyyy" pero se almacenan
-como DATE; la conversión está centralizada en _hacia_bd/_desde_bd. Las contraseñas
-se almacenan cifradas (hash con sal); ver modelo/seguridad.py.
-
-Al leer una fila se reconstruye el objeto del modelo con `Cls.__new__(Cls)` y se
-asignan los atributos directamente: NO se ejecuta `__init__`, evitando que las
-validaciones del constructor se disparen sobre datos ya almacenados (es la misma
-técnica que usan los ORM para materializar entidades desde la base).
+El borrado es lógico (columna `eliminado`); la cascada lógica vive en el código
+(controlador/eliminacion_cascada.py).
 """
-
-import json
 from contextlib import contextmanager
 from datetime import date, datetime
 
-import psycopg2
-from psycopg2.extras import Json
+from sqlalchemy import (
+    create_engine, MetaData, Table, Column, ForeignKey, CheckConstraint, Identity, Index,
+    Integer, String, Text, Boolean, Numeric, Date,
+    select, insert, update, text, func, literal, inspect,
+)
+from sqlalchemy.engine import URL
+from sqlalchemy.types import TypeDecorator
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.orm import registry, sessionmaker
 
 from persistencia.config_bd import CONFIG_BD
 
@@ -62,6 +57,7 @@ from modelo.formulario import Formulario1, Formulario2, Formulario3
 
 
 FORMATO_FECHA = "%d/%m/%Y"
+_SCHEMA = CONFIG_BD.get("schema", "public")
 
 # Conjuntos de estados válidos (espejo de las máquinas de estado del modelo).
 ROLES = ("administrador", "estudiante", "tutor_academico",
@@ -72,376 +68,299 @@ ESTADOS_PRACTICA = ("En progreso", "En Ejecución", "Evaluación Solicitada",
 ESTADOS_SOLICITUD = ("Pendiente", "Aprobada", "Rechazada")
 TIPOS_SOLICITUD = ("Autorización de Empresa Propia", "Emisión de Certificado/Oficio")
 ESTADOS_FORM1 = ("Pendiente", "Aprobado")
-# Formulario 2 y 3 solo se crean ya completados (no tienen máquina de estados).
 ESTADOS_FORM2 = ("Completado",)
 ESTADOS_FORM3 = ("Completado",)
 
 
-def _en(valores):
-    """Construye una lista 'a','b','c' para una cláusula IN de un CHECK."""
-    return ", ".join("'" + v.replace("'", "''") + "'" for v in valores)
+def _in(columna, valores):
+    """Expresión SQL `columna IN ('a','b',...)` para una restricción CHECK."""
+    lista = ", ".join("'" + v.replace("'", "''") + "'" for v in valores)
+    return f"{columna} IN ({lista})"
 
 
-# Definición de columnas por entidad: (nombre, tipo_sql, restriccion_inline).
-# El orden de las entidades respeta las dependencias de claves foráneas
-# (las tablas referenciadas se crean antes que las que las referencian).
-MAPEO = {
-    "administrador": {
-        "tabla": "administrador",
-        "clase": Administrador,
-        "clave": "usuario",
-        "columnas": [
-            ("usuario", "VARCHAR(20)", "PRIMARY KEY"),
-            ("contrasena", "VARCHAR(255)", "NOT NULL"),
-            ("email", "VARCHAR(120)", "NOT NULL"),
-            ("eliminado", "BOOLEAN", "NOT NULL DEFAULT FALSE"),
-        ],
-        "checks": [],
-        "fks": [],
-        "indices": [],
-    },
-    "login": {
-        "tabla": "login",
-        "clase": Credencial,
-        "clave": "identificador",
-        "columnas": [
-            ("identificador", "VARCHAR(20)", "PRIMARY KEY"),
-            ("contrasena", "VARCHAR(255)", "NOT NULL"),
-            ("rol", "VARCHAR(30)", "NOT NULL"),
-            ("eliminado", "BOOLEAN", "NOT NULL DEFAULT FALSE"),
-        ],
-        # login.identificador no lleva FK: puede apuntar a administrador,
-        # estudiante, tutores o coordinador (no hay una sola tabla destino).
-        "checks": [f"rol IN ({_en(ROLES)})"],
-        "fks": [],
-        "indices": [],
-    },
-    "estudiante": {
-        "tabla": "estudiante",
-        "clase": Estudiante,
-        "clave": "cedula",
-        "columnas": [
-            ("cedula", "VARCHAR(10)", "PRIMARY KEY"),
-            ("contrasena", "VARCHAR(255)", "NOT NULL"),
-            ("apellidos", "VARCHAR(100)", "NOT NULL"),
-            ("nombres", "VARCHAR(100)", "NOT NULL"),
-            ("telefono", "VARCHAR(10)", "NOT NULL"),
-            ("email", "VARCHAR(120)", "NOT NULL UNIQUE"),
-            ("carrera", "VARCHAR(100)", "NOT NULL"),
-            ("ciclo", "INTEGER", "NOT NULL"),
-            ("num_practicas_realizadas", "INTEGER", "NOT NULL DEFAULT 0"),
-            ("total_horas_realizadas", "INTEGER", "NOT NULL DEFAULT 0"),
-            ("eliminado", "BOOLEAN", "NOT NULL DEFAULT FALSE"),
-        ],
-        "checks": [
-            "ciclo BETWEEN 1 AND 10",
-            "num_practicas_realizadas >= 0",
-            "total_horas_realizadas >= 0",
-        ],
-        "fks": [],
-        "indices": [],
-    },
-    "tutor_academico": {
-        "tabla": "tutor_academico",
-        "clase": TutorAcademico,
-        "clave": "cedula",
-        "columnas": [
-            ("cedula", "VARCHAR(10)", "PRIMARY KEY"),
-            ("contrasena", "VARCHAR(255)", "NOT NULL"),
-            ("nombres", "VARCHAR(100)", "NOT NULL"),
-            ("apellidos", "VARCHAR(100)", "NOT NULL"),
-            ("telefono", "VARCHAR(10)", "NOT NULL"),
-            ("email", "VARCHAR(120)", "NOT NULL UNIQUE"),
-            ("carrera", "VARCHAR(100)", "NOT NULL"),
-            ("eliminado", "BOOLEAN", "NOT NULL DEFAULT FALSE"),
-        ],
-        "checks": [],
-        "fks": [],
-        "indices": [],
-    },
-    "tutor_empresarial": {
-        "tabla": "tutor_empresarial",
-        "clase": TutorEmpresarial,
-        "clave": "cedula",
-        "columnas": [
-            ("cedula", "VARCHAR(10)", "PRIMARY KEY"),
-            ("contrasena", "VARCHAR(255)", "NOT NULL"),
-            ("nombres", "VARCHAR(100)", "NOT NULL"),
-            ("apellidos", "VARCHAR(100)", "NOT NULL"),
-            ("telefono", "VARCHAR(10)", "NOT NULL"),
-            ("email", "VARCHAR(120)", "NOT NULL UNIQUE"),
-            ("cargo", "VARCHAR(100)", "NOT NULL"),
-            # ruc_empresa UNIQUE: regla "una empresa = un tutor empresarial";
-            # es la columna referenciada por oferta.ruc_empresa.
-            ("ruc_empresa", "VARCHAR(13)", "NOT NULL UNIQUE"),
-            ("nombre_empresa", "VARCHAR(150)", "NOT NULL"),
-            ("direccion_empresa", "VARCHAR(255)", "NOT NULL"),
-            ("eliminado", "BOOLEAN", "NOT NULL DEFAULT FALSE"),
-        ],
-        "checks": [],
-        "fks": [],
-        "indices": [],
-    },
-    "coordinador_vinculacion": {
-        "tabla": "coordinador_vinculacion",
-        "clase": CoordinadorVinculacion,
-        "clave": "cedula",
-        "columnas": [
-            ("cedula", "VARCHAR(10)", "PRIMARY KEY"),
-            ("contrasena", "VARCHAR(255)", "NOT NULL"),
-            ("nombres", "VARCHAR(100)", "NOT NULL"),
-            ("apellidos", "VARCHAR(100)", "NOT NULL"),
-            ("telefono", "VARCHAR(10)", "NOT NULL"),
-            ("email", "VARCHAR(120)", "NOT NULL UNIQUE"),
-            ("fecha_nacimiento", "DATE", "NOT NULL"),
-            ("direccion", "VARCHAR(255)", "NOT NULL"),
-            ("carrera", "VARCHAR(100)", "NOT NULL"),
-            ("eliminado", "BOOLEAN", "NOT NULL DEFAULT FALSE"),
-        ],
-        "checks": [],
-        "fks": [],
-        "indices": [],
-    },
-    "oferta": {
-        "tabla": "oferta",
-        "clase": Oferta,
-        "clave": "id_oferta",
-        "columnas": [
-            ("id_oferta", "INTEGER", "GENERATED ALWAYS AS IDENTITY PRIMARY KEY"),
-            ("descripcion", "TEXT", "NOT NULL"),
-            ("puesto", "VARCHAR(100)", "NOT NULL"),
-            ("fecha_publicacion", "DATE", ""),
-            ("ruc_empresa", "VARCHAR(13)", "NOT NULL"),
-            ("eliminado", "BOOLEAN", "NOT NULL DEFAULT FALSE"),
-        ],
-        "checks": [],
-        "fks": [("ruc_empresa", "tutor_empresarial", "ruc_empresa")],
-        "indices": [["ruc_empresa"]],
-    },
-    "postulacion": {
-        "tabla": "postulacion",
-        "clase": Postulacion,
-        "clave": "id_postulacion",
-        "columnas": [
-            ("id_postulacion", "INTEGER", "GENERATED ALWAYS AS IDENTITY PRIMARY KEY"),
-            ("fecha", "DATE", ""),
-            ("estado_validacion", "VARCHAR(20)", "NOT NULL"),
-            ("cedula_estudiante", "VARCHAR(10)", "NOT NULL"),
-            ("id_oferta", "INTEGER", "NOT NULL"),
-            ("id_coordinador", "VARCHAR(10)", ""),
-            ("eliminado", "BOOLEAN", "NOT NULL DEFAULT FALSE"),
-        ],
-        "checks": [f"estado_validacion IN ({_en(ESTADOS_POSTULACION)})"],
-        "fks": [
-            ("cedula_estudiante", "estudiante", "cedula"),
-            ("id_oferta", "oferta", "id_oferta"),
-            ("id_coordinador", "coordinador_vinculacion", "cedula"),
-        ],
-        "indices": [["cedula_estudiante"], ["id_oferta"], ["estado_validacion"]],
-    },
-    "practica": {
-        "tabla": "practica",
-        "clase": Practica,
-        "clave": "id_practica",
-        "columnas": [
-            ("id_practica", "INTEGER", "GENERATED ALWAYS AS IDENTITY PRIMARY KEY"),
-            ("fecha_inicio", "DATE", ""),
-            ("fecha_fin", "DATE", ""),
-            ("estado", "VARCHAR(30)", "NOT NULL"),
-            ("id_postulacion", "INTEGER", "NOT NULL"),
-            ("id_tutor_academico", "VARCHAR(10)", ""),
-            ("id_tutor_empresarial", "VARCHAR(10)", ""),
-            ("eliminado", "BOOLEAN", "NOT NULL DEFAULT FALSE"),
-        ],
-        "checks": [f"estado IN ({_en(ESTADOS_PRACTICA)})"],
-        "fks": [
-            ("id_postulacion", "postulacion", "id_postulacion"),
-            ("id_tutor_academico", "tutor_academico", "cedula"),
-            ("id_tutor_empresarial", "tutor_empresarial", "cedula"),
-        ],
-        "indices": [["id_postulacion"]],
-    },
-    "solicitud": {
-        "tabla": "solicitud",
-        "clase": None,  # dict plano
-        "clave": "id",
-        "columnas": [
-            ("id", "INTEGER", "GENERATED ALWAYS AS IDENTITY PRIMARY KEY"),
-            ("tipo", "VARCHAR(60)", "NOT NULL"),
-            ("motivo", "TEXT", "NOT NULL"),
-            ("estado", "VARCHAR(20)", "NOT NULL"),
-            ("cedula_estudiante", "VARCHAR(10)", "NOT NULL"),
-            ("fecha", "DATE", ""),
-            ("datos_empresa", "JSONB", ""),
-            ("eliminado", "BOOLEAN", "NOT NULL DEFAULT FALSE"),
-        ],
-        "checks": [
-            f"estado IN ({_en(ESTADOS_SOLICITUD)})",
-            f"tipo IN ({_en(TIPOS_SOLICITUD)})",
-        ],
-        "fks": [("cedula_estudiante", "estudiante", "cedula")],
-        "indices": [["cedula_estudiante"]],
-    },
-    "formulario1": {
-        "tabla": "formulario1",
-        "clase": Formulario1,
-        "clave": "id_formulario1",
-        "columnas": [
-            ("id_formulario1", "INTEGER", "GENERATED ALWAYS AS IDENTITY PRIMARY KEY"),
-            ("id_practica", "INTEGER", "NOT NULL"),
-            ("tipo_documento", "VARCHAR(40)", "NOT NULL"),
-            ("numero_documento", "VARCHAR(50)", "NOT NULL"),
-            ("tipo_practica", "VARCHAR(30)", "NOT NULL"),
-            ("remuneracion", "NUMERIC(10,2)", "NOT NULL"),
-            ("fecha_inicial", "DATE", ""),
-            ("fecha_final_aprox", "DATE", ""),
-            ("horas_aprox", "INTEGER", "NOT NULL"),
-            ("actividades", "JSONB", "NOT NULL"),
-            ("estado_aprobacion", "VARCHAR(20)", "NOT NULL"),
-            ("eliminado", "BOOLEAN", "NOT NULL DEFAULT FALSE"),
-        ],
-        "checks": [
-            f"estado_aprobacion IN ({_en(ESTADOS_FORM1)})",
-            "remuneracion >= 0",
-            "horas_aprox > 0",
-        ],
-        "fks": [("id_practica", "practica", "id_practica")],
-        "indices": [["id_practica"]],
-    },
-    "formulario2": {
-        "tabla": "formulario2",
-        "clase": Formulario2,
-        "clave": "id_formulario2",
-        "columnas": [
-            ("id_formulario2", "INTEGER", "GENERATED ALWAYS AS IDENTITY PRIMARY KEY"),
-            ("id_practica", "INTEGER", "NOT NULL"),
-            ("fecha_real_inicio", "DATE", ""),
-            ("fecha_real_fin", "DATE", ""),
-            ("horas_cumplidas", "INTEGER", "NOT NULL"),
-            ("calificaciones_rubrica", "JSONB", "NOT NULL"),
-            ("productos_relevantes", "TEXT", "NOT NULL"),
-            ("aspectos_relevantes", "TEXT", "NOT NULL"),
-            ("estado", "VARCHAR(20)", "NOT NULL"),
-            ("eliminado", "BOOLEAN", "NOT NULL DEFAULT FALSE"),
-        ],
-        "checks": [
-            "horas_cumplidas > 0",
-            f"estado IN ({_en(ESTADOS_FORM2)})",
-        ],
-        "fks": [("id_practica", "practica", "id_practica")],
-        "indices": [["id_practica"]],
-    },
-    "formulario3": {
-        "tabla": "formulario3",
-        "clase": Formulario3,
-        "clave": "id_formulario3",
-        "columnas": [
-            ("id_formulario3", "INTEGER", "GENERATED ALWAYS AS IDENTITY PRIMARY KEY"),
-            ("id_practica", "INTEGER", "NOT NULL"),
-            ("campo_ocupacional", "VARCHAR(150)", "NOT NULL"),
-            ("calificacion_sobre_100", "NUMERIC(5,2)", "NOT NULL"),
-            ("evaluacion_escenario", "JSONB", "NOT NULL"),
-            ("estado", "VARCHAR(20)", "NOT NULL"),
-            ("eliminado", "BOOLEAN", "NOT NULL DEFAULT FALSE"),
-        ],
-        "checks": [
-            "calificacion_sobre_100 BETWEEN 0 AND 100",
-            f"estado IN ({_en(ESTADOS_FORM3)})",
-        ],
-        "fks": [("id_practica", "practica", "id_practica")],
-        "indices": [["id_practica"]],
-    },
+# --------------------------------------------------------------------------- #
+# Tipos personalizados (reemplazan la conversión manual hacia/desde la base)
+# --------------------------------------------------------------------------- #
+class FechaTexto(TypeDecorator):
+    """Almacena DATE en la base, pero expone las fechas como texto 'dd/MM/yyyy'
+    en la aplicación (formato que usa toda la interfaz)."""
+    impl = Date
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None or value == "":
+            return None
+        if isinstance(value, str):
+            return datetime.strptime(value, FORMATO_FECHA).date()
+        return value
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        if isinstance(value, (date, datetime)):
+            return value.strftime(FORMATO_FECHA)
+        return value
+
+
+class ContrasenaHash(TypeDecorator):
+    """Cifra la contraseña (hash con sal) al escribir, si aún no está cifrada.
+    Al leer devuelve el hash almacenado tal cual (la verificación se hace en
+    modelo/seguridad.py)."""
+    impl = String
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if isinstance(value, str) and value and not es_hash(value):
+            return hash_password(value)
+        return value
+
+
+# --------------------------------------------------------------------------- #
+# Definición del esquema (SQLAlchemy Core) y mapeo imperativo a las clases
+# --------------------------------------------------------------------------- #
+metadata = MetaData(schema=_SCHEMA)
+mapper_registry = registry(metadata=metadata)
+
+
+def _falso():
+    """server_default para columnas BOOLEAN `eliminado`."""
+    return text("FALSE")
+
+
+tabla_administrador = Table(
+    "administrador", metadata,
+    Column("usuario", String(20), primary_key=True),
+    Column("contrasena", ContrasenaHash(255), nullable=False),
+    Column("email", String(120), nullable=False),
+    Column("eliminado", Boolean, nullable=False, server_default=_falso()),
+)
+
+tabla_login = Table(
+    "login", metadata,
+    Column("identificador", String(20), primary_key=True),
+    Column("contrasena", ContrasenaHash(255), nullable=False),
+    Column("rol", String(30), nullable=False),
+    Column("eliminado", Boolean, nullable=False, server_default=_falso()),
+    CheckConstraint(_in("rol", ROLES), name="ck_login_rol"),
+)
+
+tabla_estudiante = Table(
+    "estudiante", metadata,
+    Column("cedula", String(10), primary_key=True),
+    Column("contrasena", ContrasenaHash(255), nullable=False),
+    Column("apellidos", String(100), nullable=False),
+    Column("nombres", String(100), nullable=False),
+    Column("telefono", String(10), nullable=False),
+    Column("email", String(120), nullable=False, unique=True),
+    Column("carrera", String(100), nullable=False),
+    Column("ciclo", Integer, nullable=False),
+    Column("num_practicas_realizadas", Integer, nullable=False, server_default=text("0")),
+    Column("total_horas_realizadas", Integer, nullable=False, server_default=text("0")),
+    Column("eliminado", Boolean, nullable=False, server_default=_falso()),
+    CheckConstraint("ciclo BETWEEN 1 AND 10", name="ck_estudiante_ciclo"),
+    CheckConstraint("num_practicas_realizadas >= 0", name="ck_estudiante_num_practicas"),
+    CheckConstraint("total_horas_realizadas >= 0", name="ck_estudiante_total_horas"),
+)
+
+tabla_tutor_academico = Table(
+    "tutor_academico", metadata,
+    Column("cedula", String(10), primary_key=True),
+    Column("contrasena", ContrasenaHash(255), nullable=False),
+    Column("nombres", String(100), nullable=False),
+    Column("apellidos", String(100), nullable=False),
+    Column("telefono", String(10), nullable=False),
+    Column("email", String(120), nullable=False, unique=True),
+    Column("carrera", String(100), nullable=False),
+    Column("eliminado", Boolean, nullable=False, server_default=_falso()),
+)
+
+tabla_tutor_empresarial = Table(
+    "tutor_empresarial", metadata,
+    Column("cedula", String(10), primary_key=True),
+    Column("contrasena", ContrasenaHash(255), nullable=False),
+    Column("nombres", String(100), nullable=False),
+    Column("apellidos", String(100), nullable=False),
+    Column("telefono", String(10), nullable=False),
+    Column("email", String(120), nullable=False, unique=True),
+    Column("cargo", String(100), nullable=False),
+    # ruc_empresa UNIQUE: regla "una empresa = un tutor empresarial"; es la columna
+    # referenciada por oferta.ruc_empresa.
+    Column("ruc_empresa", String(13), nullable=False, unique=True),
+    Column("nombre_empresa", String(150), nullable=False),
+    Column("direccion_empresa", String(255), nullable=False),
+    Column("eliminado", Boolean, nullable=False, server_default=_falso()),
+)
+
+tabla_coordinador_vinculacion = Table(
+    "coordinador_vinculacion", metadata,
+    Column("cedula", String(10), primary_key=True),
+    Column("contrasena", ContrasenaHash(255), nullable=False),
+    Column("nombres", String(100), nullable=False),
+    Column("apellidos", String(100), nullable=False),
+    Column("telefono", String(10), nullable=False),
+    Column("email", String(120), nullable=False, unique=True),
+    Column("fecha_nacimiento", FechaTexto, nullable=False),
+    Column("direccion", String(255), nullable=False),
+    Column("carrera", String(100), nullable=False),
+    Column("eliminado", Boolean, nullable=False, server_default=_falso()),
+)
+
+tabla_oferta = Table(
+    "oferta", metadata,
+    Column("id_oferta", Integer, Identity(always=True), primary_key=True),
+    Column("descripcion", Text, nullable=False),
+    Column("puesto", String(100), nullable=False),
+    Column("fecha_publicacion", FechaTexto),
+    Column("ruc_empresa", String(13),
+           ForeignKey(tabla_tutor_empresarial.c.ruc_empresa), nullable=False, index=True),
+    Column("eliminado", Boolean, nullable=False, server_default=_falso()),
+)
+
+tabla_postulacion = Table(
+    "postulacion", metadata,
+    Column("id_postulacion", Integer, Identity(always=True), primary_key=True),
+    Column("fecha", FechaTexto),
+    Column("estado_validacion", String(20), nullable=False),
+    Column("cedula_estudiante", String(10),
+           ForeignKey(tabla_estudiante.c.cedula), nullable=False, index=True),
+    Column("id_oferta", Integer,
+           ForeignKey(tabla_oferta.c.id_oferta), nullable=False, index=True),
+    Column("id_coordinador", String(10),
+           ForeignKey(tabla_coordinador_vinculacion.c.cedula)),
+    Column("eliminado", Boolean, nullable=False, server_default=_falso()),
+    CheckConstraint(_in("estado_validacion", ESTADOS_POSTULACION),
+                    name="ck_postulacion_estado"),
+)
+# Índice adicional por estado (consultas de pendientes/validadas).
+Index("idx_postulacion_estado_validacion", tabla_postulacion.c.estado_validacion)
+
+tabla_practica = Table(
+    "practica", metadata,
+    Column("id_practica", Integer, Identity(always=True), primary_key=True),
+    Column("fecha_inicio", FechaTexto),
+    Column("fecha_fin", FechaTexto),
+    Column("estado", String(30), nullable=False),
+    Column("id_postulacion", Integer,
+           ForeignKey(tabla_postulacion.c.id_postulacion), nullable=False, index=True),
+    Column("id_tutor_academico", String(10),
+           ForeignKey(tabla_tutor_academico.c.cedula)),
+    Column("id_tutor_empresarial", String(10),
+           ForeignKey(tabla_tutor_empresarial.c.cedula)),
+    Column("eliminado", Boolean, nullable=False, server_default=_falso()),
+    CheckConstraint(_in("estado", ESTADOS_PRACTICA), name="ck_practica_estado"),
+)
+
+tabla_solicitud = Table(
+    "solicitud", metadata,
+    Column("id", Integer, Identity(always=True), primary_key=True),
+    Column("tipo", String(60), nullable=False),
+    Column("motivo", Text, nullable=False),
+    Column("estado", String(20), nullable=False),
+    Column("cedula_estudiante", String(10),
+           ForeignKey(tabla_estudiante.c.cedula), nullable=False, index=True),
+    Column("fecha", FechaTexto),
+    Column("datos_empresa", JSONB),
+    Column("eliminado", Boolean, nullable=False, server_default=_falso()),
+    CheckConstraint(_in("estado", ESTADOS_SOLICITUD), name="ck_solicitud_estado"),
+    CheckConstraint(_in("tipo", TIPOS_SOLICITUD), name="ck_solicitud_tipo"),
+)
+
+tabla_formulario1 = Table(
+    "formulario1", metadata,
+    Column("id_formulario1", Integer, Identity(always=True), primary_key=True),
+    Column("id_practica", Integer,
+           ForeignKey(tabla_practica.c.id_practica), nullable=False, index=True),
+    Column("tipo_documento", String(40), nullable=False),
+    Column("numero_documento", String(50), nullable=False),
+    Column("tipo_practica", String(30), nullable=False),
+    Column("remuneracion", Numeric(10, 2), nullable=False),
+    Column("fecha_inicial", FechaTexto),
+    Column("fecha_final_aprox", FechaTexto),
+    Column("horas_aprox", Integer, nullable=False),
+    Column("actividades", JSONB, nullable=False),
+    Column("estado_aprobacion", String(20), nullable=False),
+    Column("eliminado", Boolean, nullable=False, server_default=_falso()),
+    CheckConstraint(_in("estado_aprobacion", ESTADOS_FORM1), name="ck_form1_estado"),
+    CheckConstraint("remuneracion >= 0", name="ck_form1_remuneracion"),
+    CheckConstraint("horas_aprox > 0", name="ck_form1_horas"),
+)
+
+tabla_formulario2 = Table(
+    "formulario2", metadata,
+    Column("id_formulario2", Integer, Identity(always=True), primary_key=True),
+    Column("id_practica", Integer,
+           ForeignKey(tabla_practica.c.id_practica), nullable=False, index=True),
+    Column("fecha_real_inicio", FechaTexto),
+    Column("fecha_real_fin", FechaTexto),
+    Column("horas_cumplidas", Integer, nullable=False),
+    Column("calificaciones_rubrica", JSONB, nullable=False),
+    Column("productos_relevantes", Text, nullable=False),
+    Column("aspectos_relevantes", Text, nullable=False),
+    Column("estado", String(20), nullable=False),
+    Column("eliminado", Boolean, nullable=False, server_default=_falso()),
+    CheckConstraint("horas_cumplidas > 0", name="ck_form2_horas"),
+    CheckConstraint(_in("estado", ESTADOS_FORM2), name="ck_form2_estado"),
+)
+
+tabla_formulario3 = Table(
+    "formulario3", metadata,
+    Column("id_formulario3", Integer, Identity(always=True), primary_key=True),
+    Column("id_practica", Integer,
+           ForeignKey(tabla_practica.c.id_practica), nullable=False, index=True),
+    Column("campo_ocupacional", String(150), nullable=False),
+    Column("calificacion_sobre_100", Numeric(5, 2), nullable=False),
+    Column("evaluacion_escenario", JSONB, nullable=False),
+    Column("estado", String(20), nullable=False),
+    Column("eliminado", Boolean, nullable=False, server_default=_falso()),
+    CheckConstraint("calificacion_sobre_100 BETWEEN 0 AND 100", name="ck_form3_calificacion"),
+    CheckConstraint(_in("estado", ESTADOS_FORM3), name="ck_form3_estado"),
+)
+
+
+# Mapeo imperativo: asocia cada tabla con su clase del modelo sin tocar la clase.
+# 'solicitud' no tiene clase (se maneja como dict plano), por eso no se mapea.
+mapper_registry.map_imperatively(Administrador, tabla_administrador)
+mapper_registry.map_imperatively(Credencial, tabla_login)
+mapper_registry.map_imperatively(Estudiante, tabla_estudiante)
+mapper_registry.map_imperatively(TutorAcademico, tabla_tutor_academico)
+mapper_registry.map_imperatively(TutorEmpresarial, tabla_tutor_empresarial)
+mapper_registry.map_imperatively(CoordinadorVinculacion, tabla_coordinador_vinculacion)
+mapper_registry.map_imperatively(Oferta, tabla_oferta)
+mapper_registry.map_imperatively(Postulacion, tabla_postulacion)
+mapper_registry.map_imperatively(Practica, tabla_practica)
+mapper_registry.map_imperatively(Formulario1, tabla_formulario1)
+mapper_registry.map_imperatively(Formulario2, tabla_formulario2)
+mapper_registry.map_imperatively(Formulario3, tabla_formulario3)
+
+# Configura los mappers de inmediato: deja listos los descriptores de cada columna
+# para que asignar atributos (en __init__ o al materializar con _crear) funcione
+# desde el primer uso, sin depender de que se ejecute antes una consulta ORM.
+mapper_registry.configure()
+
+
+# Catálogo de entidades: tabla, clase (o None si es dict) y nombre de la clave.
+ENTIDADES = {
+    "administrador":            (tabla_administrador, Administrador, "usuario"),
+    "login":                    (tabla_login, Credencial, "identificador"),
+    "estudiante":               (tabla_estudiante, Estudiante, "cedula"),
+    "tutor_academico":          (tabla_tutor_academico, TutorAcademico, "cedula"),
+    "tutor_empresarial":        (tabla_tutor_empresarial, TutorEmpresarial, "cedula"),
+    "coordinador_vinculacion":  (tabla_coordinador_vinculacion, CoordinadorVinculacion, "cedula"),
+    "oferta":                   (tabla_oferta, Oferta, "id_oferta"),
+    "postulacion":              (tabla_postulacion, Postulacion, "id_postulacion"),
+    "practica":                 (tabla_practica, Practica, "id_practica"),
+    "solicitud":                (tabla_solicitud, None, "id"),
+    "formulario1":              (tabla_formulario1, Formulario1, "id_formulario1"),
+    "formulario2":              (tabla_formulario2, Formulario2, "id_formulario2"),
+    "formulario3":              (tabla_formulario3, Formulario3, "id_formulario3"),
 }
 
 
-class GestorPersistencia:
-
-    def __init__(self):
-        self.schema = CONFIG_BD.get("schema", "public")
-        self._en_transaccion = False
-        self.conexion = psycopg2.connect(
-            host=CONFIG_BD["host"],
-            port=CONFIG_BD["port"],
-            dbname=CONFIG_BD["dbname"],
-            user=CONFIG_BD["user"],
-            password=CONFIG_BD["password"],
-            # Forzamos UTF-8 para que los mensajes de error de PostgreSQL
-            # (cluster con lc_messages en español) lleguen decodificables.
-            client_encoding="UTF8",
-        )
-        self._asegurar_esquema()
-
-    # ------------------------------------------------------------------ #
-    # Utilidades internas
-    # ------------------------------------------------------------------ #
-    def _tabla(self, nombre):
-        return f'"{self.schema}".{nombre}'
-
-    @staticmethod
-    def _columnas(mapa):
-        return [col for (col, _tipo, _restr) in mapa["columnas"]]
-
-    @staticmethod
-    def _es_identidad(restr):
-        """True si la columna la genera la base de datos (IDENTITY)."""
-        return "IDENTITY" in (restr or "").upper()
-
-    @staticmethod
-    def _columna_identidad(mapa):
-        """Nombre de la columna IDENTITY de la entidad, o None si no tiene."""
-        for (col, _tipo, restr) in mapa["columnas"]:
-            if GestorPersistencia._es_identidad(restr):
-                return col
-        return None
-
-    @staticmethod
-    def _columnas_persistibles(mapa):
-        """Columnas que escribe la aplicación (excluye las generadas por la base,
-        como los ids IDENTITY)."""
-        return [(c, t, r) for (c, t, r) in mapa["columnas"]
-                if not GestorPersistencia._es_identidad(r)]
-
-    def _asegurar_esquema(self):
-        """Crea el esquema, las tablas (con restricciones) y los índices si aún
-        no existen (idempotente)."""
-        with self.conexion.cursor() as cur:
-            cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{self.schema}"')
-            cur.execute(f'SET search_path TO "{self.schema}"')
-            for mapa in MAPEO.values():
-                definiciones = []
-                for (col, tipo, restr) in mapa["columnas"]:
-                    linea = f"{col} {tipo}"
-                    if restr:
-                        linea += f" {restr}"
-                    definiciones.append(linea)
-                for check in mapa.get("checks", []):
-                    definiciones.append(f"CHECK ({check})")
-                for (col_local, tabla_ref, col_ref) in mapa.get("fks", []):
-                    definiciones.append(
-                        f'CONSTRAINT fk_{mapa["tabla"]}_{col_local} '
-                        f'FOREIGN KEY ({col_local}) '
-                        f'REFERENCES {self._tabla(tabla_ref)}({col_ref})'
-                    )
-                cur.execute(
-                    f'CREATE TABLE IF NOT EXISTS {self._tabla(mapa["tabla"])} '
-                    f'({", ".join(definiciones)})'
-                )
-                for cols in mapa.get("indices", []):
-                    nombre = f'idx_{mapa["tabla"]}_{"_".join(cols)}'
-                    cur.execute(
-                        f'CREATE INDEX IF NOT EXISTS {nombre} '
-                        f'ON {self._tabla(mapa["tabla"])} ({", ".join(cols)})'
-                    )
-            self._asegurar_vistas(cur)
-        self.conexion.commit()
-
-    def _asegurar_vistas(self, cur):
-        """Crea (o reemplaza) las vistas SQL que cruzan tablas para los listados
-        de la interfaz. Concentran los JOIN en la base de datos."""
-        s = f'"{self.schema}"'
-        # Postulación + estudiante + oferta + empresa
-        cur.execute(f'''
-            CREATE OR REPLACE VIEW {s}.vista_postulacion_detalle AS
+# Vistas que cruzan tablas para los listados de la interfaz (los JOIN viven en la
+# base). Se crean/reemplazan después de las tablas; SQLAlchemy no gestiona vistas.
+def _ddl_vistas(s):
+    return [
+        f'''CREATE OR REPLACE VIEW "{s}".vista_postulacion_detalle AS
             SELECT p.id_postulacion, p.estado_validacion, p.fecha, p.eliminado,
                    p.cedula_estudiante,
                    e.nombres  AS est_nombres,  e.apellidos AS est_apellidos,
@@ -449,34 +368,60 @@ class GestorPersistencia:
                    e.carrera  AS est_carrera,
                    p.id_oferta, o.puesto AS oferta_puesto, o.descripcion AS oferta_descripcion,
                    o.ruc_empresa, te.nombre_empresa
-            FROM {s}.postulacion p
-            JOIN {s}.estudiante e        ON p.cedula_estudiante = e.cedula
-            JOIN {s}.oferta o            ON p.id_oferta = o.id_oferta
-            JOIN {s}.tutor_empresarial te ON o.ruc_empresa = te.ruc_empresa
-        ''')
-        # Práctica + estudiante + tutores
-        cur.execute(f'''
-            CREATE OR REPLACE VIEW {s}.vista_practica_detalle AS
+            FROM "{s}".postulacion p
+            JOIN "{s}".estudiante e         ON p.cedula_estudiante = e.cedula
+            JOIN "{s}".oferta o             ON p.id_oferta = o.id_oferta
+            JOIN "{s}".tutor_empresarial te ON o.ruc_empresa = te.ruc_empresa''',
+        f'''CREATE OR REPLACE VIEW "{s}".vista_practica_detalle AS
             SELECT pr.id_practica, pr.estado, pr.fecha_inicio, pr.fecha_fin, pr.eliminado,
                    pr.id_postulacion, pr.id_tutor_academico, pr.id_tutor_empresarial,
                    e.cedula AS est_cedula, e.nombres AS est_nombres, e.apellidos AS est_apellidos,
                    e.carrera AS est_carrera,
                    ta.nombres AS acad_nombres, ta.apellidos AS acad_apellidos,
                    te.nombres AS emp_nombres,  te.apellidos AS emp_apellidos, te.nombre_empresa
-            FROM {s}.practica pr
-            JOIN {s}.postulacion p        ON pr.id_postulacion = p.id_postulacion
-            JOIN {s}.estudiante e         ON p.cedula_estudiante = e.cedula
-            LEFT JOIN {s}.tutor_academico ta    ON pr.id_tutor_academico = ta.cedula
-            LEFT JOIN {s}.tutor_empresarial te  ON pr.id_tutor_empresarial = te.cedula
-        ''')
-        # Oferta + empresa
-        cur.execute(f'''
-            CREATE OR REPLACE VIEW {s}.vista_oferta_detalle AS
+            FROM "{s}".practica pr
+            JOIN "{s}".postulacion p           ON pr.id_postulacion = p.id_postulacion
+            JOIN "{s}".estudiante e            ON p.cedula_estudiante = e.cedula
+            LEFT JOIN "{s}".tutor_academico ta   ON pr.id_tutor_academico = ta.cedula
+            LEFT JOIN "{s}".tutor_empresarial te ON pr.id_tutor_empresarial = te.cedula''',
+        f'''CREATE OR REPLACE VIEW "{s}".vista_oferta_detalle AS
             SELECT o.id_oferta, o.puesto, o.descripcion, o.fecha_publicacion, o.eliminado,
                    o.ruc_empresa, te.nombre_empresa
-            FROM {s}.oferta o
-            JOIN {s}.tutor_empresarial te ON o.ruc_empresa = te.ruc_empresa
-        ''')
+            FROM "{s}".oferta o
+            JOIN "{s}".tutor_empresarial te ON o.ruc_empresa = te.ruc_empresa''',
+    ]
+
+
+# Motor y fábrica de sesiones compartidos (un único pool para toda la aplicación).
+_engine = create_engine(
+    URL.create(
+        "postgresql+psycopg2",
+        username=CONFIG_BD["user"],
+        password=CONFIG_BD["password"],
+        host=CONFIG_BD["host"],
+        port=CONFIG_BD["port"],
+        database=CONFIG_BD["dbname"],
+    ),
+    client_encoding="utf8",
+    future=True,
+)
+_Session = sessionmaker(bind=_engine, future=True)
+
+
+class GestorPersistencia:
+
+    def __init__(self):
+        self.schema = _SCHEMA
+        self._en_transaccion = False
+        self._session = _Session()
+        self._asegurar_esquema()
+
+    # ------------------------------------------------------------------ #
+    # Utilidades internas
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _entidad(entidad):
+        return ENTIDADES[entidad]
 
     @staticmethod
     def _leer_atributo(objeto, columna):
@@ -485,75 +430,58 @@ class GestorPersistencia:
         return getattr(objeto, columna, None)
 
     @staticmethod
-    def _hacia_bd(valor, tipo):
-        if tipo == "JSONB":
-            return Json(valor) if valor is not None else None
-        if tipo == "DATE":
-            if valor is None or valor == "":
-                return None
-            if isinstance(valor, str):
-                return datetime.strptime(valor, FORMATO_FECHA).date()
-            return valor
-        return valor
-
-    @staticmethod
-    def _desde_bd(valor, tipo):
-        if tipo == "JSONB" and isinstance(valor, str):
-            return json.loads(valor)
-        if tipo == "DATE":
-            if valor is None:
-                return None
-            if isinstance(valor, (date, datetime)):
-                return valor.strftime(FORMATO_FECHA)
-            return valor
-        return valor
-
-    @staticmethod
-    def _reconstruir(mapa, fila):
-        """Reconstruye el objeto (o dict) a partir de una fila {columna: valor}.
-        Usa Cls.__new__ para no ejecutar __init__ ni revalidar datos ya guardados
-        (misma técnica que usan los ORM para materializar entidades)."""
-        clase = mapa["clase"]
-        if clase is None:
-            return {col: GestorPersistencia._desde_bd(fila[col], tipo)
-                    for (col, tipo, _restr) in mapa["columnas"]}
-        objeto = clase.__new__(clase)
-        for (col, tipo, _restr) in mapa["columnas"]:
-            setattr(objeto, col, GestorPersistencia._desde_bd(fila[col], tipo))
-        return objeto
-
-    @staticmethod
     def _asignar(objeto, columna, valor):
         if isinstance(objeto, dict):
             objeto[columna] = valor
         else:
             setattr(objeto, columna, valor)
 
-    def _valor_bd(self, col, tipo, valor_objeto):
-        """Convierte el valor de un atributo a su representación en la base.
-        Las contraseñas se cifran (hash con sal) si aún no lo están."""
-        valor = self._hacia_bd(valor_objeto, tipo)
-        if col == "contrasena" and isinstance(valor, str) and valor and not es_hash(valor):
-            valor = hash_password(valor)
-        return valor
+    @staticmethod
+    def _bindize(sql, params):
+        """Traduce los marcadores posicionales '%s' (estilo psycopg2 que usan los
+        repositorios) a parámetros nombrados ':_pN' para SQLAlchemy `text()`."""
+        partes = sql.split("%s")
+        if len(partes) == 1:
+            return sql, {}
+        binds = {}
+        salida = [partes[0]]
+        for i, parte in enumerate(partes[1:]):
+            nombre = f"_p{i}"
+            binds[nombre] = params[i]
+            salida.append(f":{nombre}")
+            salida.append(parte)
+        return "".join(salida), binds
 
-    def _valores(self, mapa, objeto, columnas):
-        """Tupla de valores (convertidos a BD) para la lista de columnas dada."""
-        return tuple(
-            self._valor_bd(col, tipo, self._leer_atributo(objeto, col))
-            for (col, tipo, _restr) in columnas
-        )
+    def _condicion(self, where, params, incluir_eliminados):
+        """Construye la cláusula WHERE (como `text()` con sus binds) combinando el
+        filtro de borrado lógico con el `where` opcional del repositorio."""
+        clausulas = []
+        binds = {}
+        if not incluir_eliminados:
+            clausulas.append("eliminado = FALSE")
+        if where:
+            sql, b = self._bindize(where, tuple(params))
+            clausulas.append(sql)
+            binds.update(b)
+        if not clausulas:
+            return None
+        condicion = text(" AND ".join(clausulas))
+        return condicion.bindparams(**binds) if binds else condicion
 
-    def _rollback_seguro(self):
-        try:
-            self.conexion.rollback()
-        except Exception:
-            pass
+    def _asegurar_esquema(self):
+        """Crea esquema, tablas, índices, restricciones y vistas si no existen
+        (idempotente)."""
+        with _engine.begin() as conn:
+            conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{self.schema}"'))
+        metadata.create_all(_engine, checkfirst=True)
+        with _engine.begin() as conn:
+            for ddl in _ddl_vistas(self.schema):
+                conn.execute(text(ddl))
 
     def _commit_si_corresponde(self):
         """Confirma solo si no estamos dentro de un bloque transaccion()."""
         if not self._en_transaccion:
-            self.conexion.commit()
+            self._session.commit()
 
     @contextmanager
     def transaccion(self):
@@ -565,121 +493,116 @@ class GestorPersistencia:
         try:
             yield
             if not anterior:
-                self.conexion.commit()
+                self._session.commit()
         except Exception:
-            self._rollback_seguro()
+            self._session.rollback()
             raise
         finally:
             self._en_transaccion = anterior
 
+    def close(self):
+        """Cierra la sesión (devuelve la conexión al pool)."""
+        self._session.close()
+
     # ------------------------------------------------------------------ #
-    # Interfaz SQL puntual (usada por los repositorios)
+    # Interfaz de acceso a datos (usada por los repositorios)
     # ------------------------------------------------------------------ #
     def obtener(self, entidad, clave):
         """Devuelve el objeto/dict con esa clave primaria, o None (incluye los
         marcados como eliminados; el filtrado por 'eliminado' lo decide quien
-        llama, igual que antes)."""
-        mapa = MAPEO[entidad]
-        columnas = self._columnas(mapa)
-        with self.conexion.cursor() as cur:
-            cur.execute(
-                f'SELECT {", ".join(columnas)} FROM {self._tabla(mapa["tabla"])} '
-                f'WHERE {mapa["clave"]} = %s',
-                (clave,))
-            tupla = cur.fetchone()
-        if tupla is None:
-            return None
-        return self._reconstruir(mapa, dict(zip(columnas, tupla)))
+        llama)."""
+        tabla, clase, pk = self._entidad(entidad)
+        if clase is not None:
+            return self._session.get(clase, clave)
+        fila = self._session.execute(
+            select(tabla).where(tabla.c[pk] == clave)).mappings().first()
+        return dict(fila) if fila is not None else None
 
     def existe(self, entidad, clave):
         """True si la clave primaria existe físicamente (incluye eliminados)."""
-        mapa = MAPEO[entidad]
-        with self.conexion.cursor() as cur:
-            cur.execute(
-                f'SELECT 1 FROM {self._tabla(mapa["tabla"])} '
-                f'WHERE {mapa["clave"]} = %s',
-                (clave,))
-            return cur.fetchone() is not None
+        tabla, _clase, pk = self._entidad(entidad)
+        fila = self._session.execute(
+            select(literal(1)).select_from(tabla).where(tabla.c[pk] == clave).limit(1)
+        ).first()
+        return fila is not None
 
     def listar(self, entidad, where=None, params=(), incluir_eliminados=False, orden=None):
         """Lista objetos/dicts de la entidad. Por defecto excluye los eliminados.
         `where` es una cláusula SQL adicional con marcadores %s y `params` sus
-        valores."""
-        mapa = MAPEO[entidad]
-        columnas = self._columnas(mapa)
-        clausulas = []
-        if not incluir_eliminados:
-            clausulas.append("eliminado = FALSE")
-        if where:
-            clausulas.append(where)
-        sql = f'SELECT {", ".join(columnas)} FROM {self._tabla(mapa["tabla"])}'
-        if clausulas:
-            sql += " WHERE " + " AND ".join(clausulas)
+        valores (compatibilidad con la API anterior)."""
+        tabla, clase, _pk = self._entidad(entidad)
+        objetivo = clase if clase is not None else tabla
+        stmt = select(objetivo)
+        condicion = self._condicion(where, params, incluir_eliminados)
+        if condicion is not None:
+            stmt = stmt.where(condicion)
         if orden:
-            sql += f" ORDER BY {orden}"
-        with self.conexion.cursor() as cur:
-            cur.execute(sql, tuple(params))
-            filas = cur.fetchall()
-        return [self._reconstruir(mapa, dict(zip(columnas, f))) for f in filas]
+            stmt = stmt.order_by(text(orden))
+        if clase is not None:
+            return list(self._session.execute(stmt).scalars().all())
+        return [dict(f) for f in self._session.execute(stmt).mappings().all()]
 
     def insertar(self, entidad, objeto):
-        """INSERT de una sola fila (alta). Si la tabla tiene id generado por la
-        base (IDENTITY), se omite esa columna, se recupera el id con RETURNING y
-        se asigna de vuelta al objeto."""
-        mapa = MAPEO[entidad]
-        persistibles = self._columnas_persistibles(mapa)
-        nombres = [c for (c, _t, _r) in persistibles]
-        marcadores = ", ".join(["%s"] * len(nombres))
-        id_generado = self._columna_identidad(mapa)
-        sql = (f'INSERT INTO {self._tabla(mapa["tabla"])} ({", ".join(nombres)}) '
-               f'VALUES ({marcadores})')
-        if id_generado:
-            sql += f' RETURNING {id_generado}'
+        """Alta de una fila. Si la tabla tiene id generado por la base (IDENTITY),
+        se recupera con RETURNING y se asigna de vuelta al objeto."""
+        tabla, clase, _pk = self._entidad(entidad)
         try:
-            with self.conexion.cursor() as cur:
-                cur.execute(sql, self._valores(mapa, objeto, persistibles))
-                if id_generado:
-                    self._asignar(objeto, id_generado, cur.fetchone()[0])
+            if clase is not None:
+                self._session.add(objeto)
+                self._session.flush()  # asigna los ids generados (IDENTITY)
+            else:
+                generadas = {c.name for c in tabla.columns if c.identity is not None}
+                valores = {c.name: objeto[c.name]
+                           for c in tabla.columns
+                           if c.name not in generadas and c.name in objeto}
+                identidad = [tabla.c[n] for n in
+                             (c.name for c in tabla.columns if c.identity is not None)]
+                stmt = insert(tabla).values(**valores)
+                if identidad:
+                    stmt = stmt.returning(*identidad)
+                    fila = self._session.execute(stmt).first()
+                    if fila is not None:
+                        for col, valor in zip(identidad, fila):
+                            objeto[col.name] = valor
+                else:
+                    self._session.execute(stmt)
             self._commit_si_corresponde()
         except Exception:
-            self._rollback_seguro()
+            self._session.rollback()
             raise
 
     def actualizar(self, entidad, objeto):
-        """UPDATE real de una fila existente, identificada por su clave primaria.
-        Modifica todas las columnas escribibles (no la PK ni las generadas)."""
-        mapa = MAPEO[entidad]
-        clave = mapa["clave"]
-        columnas_set = [(c, t, r) for (c, t, r) in self._columnas_persistibles(mapa)
-                        if c != clave]
-        asignaciones = ", ".join(f"{c} = %s" for (c, _t, _r) in columnas_set)
-        sql = (f'UPDATE {self._tabla(mapa["tabla"])} SET {asignaciones} '
-               f'WHERE {clave} = %s')
-        valores = self._valores(mapa, objeto, columnas_set) + (self._leer_atributo(objeto, clave),)
+        """Modifica una fila existente identificada por su clave primaria."""
+        tabla, clase, pk = self._entidad(entidad)
         try:
-            with self.conexion.cursor() as cur:
-                cur.execute(sql, valores)
+            if clase is not None:
+                self._session.merge(objeto)
+            else:
+                generadas = {c.name for c in tabla.columns if c.identity is not None}
+                valores = {c.name: objeto[c.name]
+                           for c in tabla.columns
+                           if c.name != pk and c.name not in generadas and c.name in objeto}
+                self._session.execute(
+                    update(tabla).where(tabla.c[pk] == objeto[pk]).values(**valores))
             self._commit_si_corresponde()
         except Exception:
-            self._rollback_seguro()
+            self._session.rollback()
             raise
 
     def marcar_eliminado(self, entidad, clave):
         """Eliminación lógica: marca la fila como eliminada."""
-        mapa = MAPEO[entidad]
-        sql = (f'UPDATE {self._tabla(mapa["tabla"])} SET eliminado = TRUE '
-               f'WHERE {mapa["clave"]} = %s')
+        tabla, _clase, pk = self._entidad(entidad)
         try:
-            with self.conexion.cursor() as cur:
-                cur.execute(sql, (clave,))
+            self._session.execute(
+                update(tabla).where(tabla.c[pk] == clave).values(eliminado=True))
             self._commit_si_corresponde()
         except Exception:
-            self._rollback_seguro()
+            self._session.rollback()
             raise
 
     def marcar_eliminados(self, entidad, claves):
         """Eliminación lógica en lote por clave primaria (para la cascada)."""
-        self.marcar_eliminados_por(entidad, MAPEO[entidad]["clave"], claves)
+        self.marcar_eliminados_por(entidad, self._entidad(entidad)[2], claves)
 
     def marcar_eliminados_por(self, entidad, columna, valores):
         """Eliminación lógica en lote filtrando por una columna cualquiera
@@ -688,33 +611,32 @@ class GestorPersistencia:
         valores = list(valores)
         if not valores:
             return
-        mapa = MAPEO[entidad]
-        sql = (f'UPDATE {self._tabla(mapa["tabla"])} SET eliminado = TRUE '
-               f'WHERE {columna} = ANY(%s)')
+        tabla, _clase, _pk = self._entidad(entidad)
         try:
-            with self.conexion.cursor() as cur:
-                cur.execute(sql, (valores,))
+            self._session.execute(
+                update(tabla).where(tabla.c[columna].in_(valores)).values(eliminado=True))
             self._commit_si_corresponde()
         except Exception:
-            self._rollback_seguro()
+            self._session.rollback()
             raise
 
     def consultar(self, sql, params=()):
-        """Ejecuta una consulta SQL libre (p. ej. con JOIN) y devuelve una lista
-        de dicts {columna: valor}. Las columnas DATE se devuelven formateadas a
-        'dd/MM/yyyy' para mostrarse directamente en la interfaz."""
+        """Ejecuta una consulta SQL libre (p. ej. con JOIN sobre las vistas) y
+        devuelve una lista de dicts {columna: valor}. Las columnas DATE se
+        devuelven formateadas a 'dd/MM/yyyy' para mostrarse en la interfaz."""
+        sql2, binds = self._bindize(sql, tuple(params))
+        consulta = text(sql2)
+        if binds:
+            consulta = consulta.bindparams(**binds)
         try:
-            with self.conexion.cursor() as cur:
-                cur.execute(sql, tuple(params))
-                nombres = [d[0] for d in cur.description]
-                filas = cur.fetchall()
+            filas = self._session.execute(consulta).mappings().all()
         except Exception:
-            self._rollback_seguro()
+            self._session.rollback()
             raise
         resultado = []
         for fila in filas:
             registro = {}
-            for nombre, valor in zip(nombres, fila):
+            for nombre, valor in fila.items():
                 if isinstance(valor, (date, datetime)):
                     registro[nombre] = valor.strftime(FORMATO_FECHA)
                 else:
@@ -726,45 +648,36 @@ class GestorPersistencia:
     # Sembrado de datos (escritura en lote, solo para el primer arranque)
     # ------------------------------------------------------------------ #
     def _guardar_lote(self, entidad, diccionario_datos):
-        """Inserta/actualiza en lote un diccionario {clave: objeto}, de forma
+        """Inserta/actualiza en lote un diccionario {clave: objeto} de forma
         idempotente (ON CONFLICT DO UPDATE). Lo usa únicamente el sembrado de
-        datos de ejemplo del primer arranque, y solo para entidades con clave
-        natural (sin id generado)."""
-        mapa = MAPEO[entidad]
-        columnas = mapa["columnas"]
-        nombres = [c for (c, _t, _r) in columnas]
-        marcadores = ", ".join(["%s"] * len(nombres))
-        asignaciones = ", ".join(
-            f"{col} = EXCLUDED.{col}" for col in nombres if col != mapa["clave"])
-        sql = (
-            f'INSERT INTO {self._tabla(mapa["tabla"])} ({", ".join(nombres)}) '
-            f'VALUES ({marcadores}) '
-            f'ON CONFLICT ({mapa["clave"]}) DO UPDATE SET {asignaciones}'
-        )
-        filas = [self._valores(mapa, objeto, columnas)
+        datos del primer arranque, y solo para entidades con clave natural."""
+        if not diccionario_datos:
+            return
+        tabla, _clase, pk = self._entidad(entidad)
+        nombres = [c.name for c in tabla.columns]
+        filas = [{col: self._leer_atributo(objeto, col) for col in nombres}
                  for objeto in diccionario_datos.values()]
+        stmt = pg_insert(tabla).values(filas)
+        actualizaciones = {col: stmt.excluded[col] for col in nombres if col != pk}
+        stmt = stmt.on_conflict_do_update(index_elements=[pk], set_=actualizaciones)
         try:
-            with self.conexion.cursor() as cur:
-                if filas:
-                    cur.executemany(sql, filas)
+            self._session.execute(stmt)
             self._commit_si_corresponde()
         except Exception:
-            self._rollback_seguro()
+            self._session.rollback()
             raise
 
     def _contar(self, entidad):
-        mapa = MAPEO[entidad]
-        with self.conexion.cursor() as cur:
-            cur.execute(f'SELECT COUNT(*) FROM {self._tabla(mapa["tabla"])}')
-            return cur.fetchone()[0]
+        tabla, _clase, _pk = self._entidad(entidad)
+        return self._session.execute(select(func.count()).select_from(tabla)).scalar_one()
 
     # ------------------------------------------------------------------ #
     # Inicialización de datos
     # ------------------------------------------------------------------ #
     @staticmethod
     def inicializar_datos_si_vacio():
-        """Crea esquema/tablas y, si no hay credenciales, siembra el admin y
-        un conjunto de datos de ejemplo para poder probar la aplicación."""
+        """Crea esquema/tablas y, si no hay credenciales, siembra el admin y un
+        conjunto de datos de ejemplo para poder probar la aplicación."""
         gestor = GestorPersistencia()
         if gestor._contar("login") > 0:
             return
@@ -780,17 +693,22 @@ class GestorPersistencia:
 
     @staticmethod
     def _crear(clase, atributos):
-        """Instancia una clase del modelo sin pasar por sus validaciones."""
-        objeto = clase.__new__(clase)
+        """Instancia una clase del modelo sin pasar por sus validaciones. Para las
+        clases mapeadas se usa el class_manager de SQLAlchemy (igual que al
+        materializar una fila), de modo que la instancia tenga su estado ORM sin
+        ejecutar __init__."""
+        try:
+            objeto = inspect(clase).class_manager.new_instance()
+        except Exception:
+            objeto = clase.__new__(clase)
         for nombre, valor in atributos.items():
             setattr(objeto, nombre, valor)
         return objeto
 
     def _sembrar_datos_ejemplo(self):
-        """Inserta datos de ejemplo (adaptados del .sql de referencia) ajustados
-        a la estructura del modelo Python. Se evita la validación del
-        constructor usando _crear, para que las cédulas/datos de muestra no
-        provoquen errores. Cada usuario recibe su credencial de acceso."""
+        """Inserta datos de ejemplo ajustados a la estructura del modelo. Se evita
+        la validación del constructor usando _crear. Cada usuario recibe su
+        credencial de acceso."""
         credenciales = {}
 
         # --- Estudiantes ---
