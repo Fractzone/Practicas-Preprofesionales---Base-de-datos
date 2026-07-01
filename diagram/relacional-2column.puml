@@ -1,0 +1,169 @@
+@startuml
+' Configuración visual básica
+hide circle
+skinparam linetype ortho
+skinparam class {
+    BackgroundColor White
+    ArrowColor Black
+    BorderColor Black
+}
+
+entity "administrador" as admin {
+  | <color:#b8861b><&key></color> PK | usuario |
+  | | contrasena |
+  | | email |
+  | | eliminado |
+}
+
+entity "login" as login {
+  | <color:#b8861b><&key></color> PK | identificador |
+  | | contrasena |
+  | | rol |
+  | | eliminado |
+}
+
+entity "estudiante" as estudiante {
+  | <color:#b8861b><&key></color> PK | cedula |
+  | | contrasena |
+  | | apellidos |
+  | | nombres |
+  | | telefono |
+  | | email |
+  | | carrera |
+  | | ciclo |
+  | | num_practicas_realizadas |
+  | | total_horas_realizadas |
+  | | eliminado |
+}
+
+entity "tutor_academico" as tutor_academico {
+  | <color:#b8861b><&key></color> PK | cedula |
+  | | contrasena |
+  | | nombres |
+  | | apellidos |
+  | | telefono |
+  | | email |
+  | | carrera |
+  | | eliminado |
+}
+
+entity "tutor_empresarial" as tutor_empresarial {
+  | <color:#b8861b><&key></color> PK | cedula |
+  | | contrasena |
+  | | nombres |
+  | | apellidos |
+  | | telefono |
+  | | email |
+  | | cargo |
+  | | ruc_empresa |
+  | | nombre_empresa |
+  | | direccion_empresa |
+  | | eliminado |
+}
+
+entity "coordinador_vinculacion" as coordinador_vinculacion {
+  | <color:#b8861b><&key></color> PK | cedula |
+  | | contrasena |
+  | | nombres |
+  | | apellidos |
+  | | telefono |
+  | | email |
+  | | fecha_nacimiento |
+  | | direccion |
+  | | carrera |
+  | | eliminado |
+}
+
+entity "oferta" as oferta {
+  | <color:#b8861b><&key></color> PK | id_oferta |
+  | | descripcion |
+  | | puesto |
+  | | fecha_publicacion |
+  | FK | ruc_empresa |
+  | | eliminado |
+}
+
+entity "postulacion" as postulacion {
+  | <color:#b8861b><&key></color> PK | id_postulacion |
+  | | fecha |
+  | | estado_validacion |
+  | FK | cedula_estudiante |
+  | FK | id_oferta |
+  | FK | id_coordinador |
+  | | eliminado |
+}
+
+entity "practica" as practica {
+  | <color:#b8861b><&key></color> PK | id_practica |
+  | | fecha_inicio |
+  | | fecha_fin |
+  | | estado |
+  | FK | id_postulacion |
+  | FK | id_tutor_academico |
+  | FK | id_tutor_empresarial |
+  | | eliminado |
+}
+
+entity "solicitud" as solicitud {
+  | <color:#b8861b><&key></color> PK | id |
+  | | tipo |
+  | | motivo |
+  | | estado |
+  | FK | cedula_estudiante |
+  | | fecha |
+  | | datos_empresa |
+  | | eliminado |
+}
+
+entity "formulario1" as formulario1 {
+  | <color:#b8861b><&key></color> PK | id_formulario1 |
+  | FK | id_practica |
+  | | tipo_documento |
+  | | numero_documento |
+  | | tipo_practica |
+  | | remuneracion |
+  | | fecha_inicial |
+  | | fecha_final_aprox |
+  | | horas_aprox |
+  | | actividades |
+  | | estado_aprobacion |
+  | | eliminado |
+}
+
+entity "formulario2" as formulario2 {
+  | <color:#b8861b><&key></color> PK | id_formulario2 |
+  | FK | id_practica |
+  | | fecha_real_inicio |
+  | | fecha_real_fin |
+  | | horas_cumplidas |
+  | | calificaciones_rubrica |
+  | | productos_relevantes |
+  | | aspectos_relevantes |
+  | | estado |
+  | | eliminado |
+}
+
+entity "formulario3" as formulario3 {
+  | <color:#b8861b><&key></color> PK | id_formulario3 |
+  | FK | id_practica |
+  | | campo_ocupacional |
+  | | calificacion_sobre_100 |
+  | | evaluacion_escenario |
+  | | estado |
+  | | eliminado |
+}
+
+' Relaciones
+tutor_empresarial ||--o{ oferta : "publica"
+estudiante ||--o{ postulacion : "postula"
+oferta ||--o{ postulacion : "recibe"
+coordinador_vinculacion ||--o{ postulacion : "valida"
+postulacion ||--o| practica : "genera"
+tutor_academico ||--o{ practica : "dirige"
+tutor_empresarial ||--o{ practica : "supervisa"
+estudiante ||--o{ solicitud : "envia"
+practica ||--o| formulario1 : "tiene"
+practica ||--o| formulario2 : "tiene"
+practica ||--o| formulario3 : "tiene"
+
+@enduml

@@ -1,0 +1,71 @@
+// Diagrama Entidad-Relacion (notacion de Peter Chen)
+// Render: dot -Tpng diagrama_er_chen.dot -o diagrama_er_chen.png
+//   o pegarlo en https://dreampuf.github.io/GraphvizOnline
+graph ER {
+    layout=neato;
+    overlap=false;
+    splines=true;
+    sep="+12";
+    node [fontname="Segoe UI", fontsize=10];
+    edge [fontname="Segoe UI", fontsize=9, dir=none];
+
+    E_administrador [shape=box, style="bold,filled", fillcolor="#cfe8ff", label="ADMINISTRADOR"];
+
+    E_login [shape=box, style="bold,filled", fillcolor="#cfe8ff", label="LOGIN"];
+
+    E_estudiante [shape=box, style="bold,filled", fillcolor="#cfe8ff", label="ESTUDIANTE"];
+
+    E_tutor_academico [shape=box, style="bold,filled", fillcolor="#cfe8ff", label="TUTOR_ACADEMICO"];
+
+    E_tutor_empresarial [shape=box, style="bold,filled", fillcolor="#cfe8ff", label="TUTOR_EMPRESARIAL"];
+
+    E_coordinador_vinculacion [shape=box, style="bold,filled", fillcolor="#cfe8ff", label="COORDINADOR_VINCULACION"];
+
+    E_oferta [shape=box, style="bold,filled", fillcolor="#cfe8ff", label="OFERTA"];
+
+    E_postulacion [shape=box, style="bold,filled", fillcolor="#cfe8ff", label="POSTULACION"];
+
+    E_practica [shape=box, style="bold,filled", fillcolor="#cfe8ff", label="PRACTICA"];
+
+    E_solicitud [shape=box, style="bold,filled", fillcolor="#cfe8ff", label="SOLICITUD"];
+
+    E_formulario1 [shape=box, style="bold,filled", fillcolor="#cfe8ff", label="FORMULARIO1"];
+
+    E_formulario2 [shape=box, style="bold,filled", fillcolor="#cfe8ff", label="FORMULARIO2"];
+
+    E_formulario3 [shape=box, style="bold,filled", fillcolor="#cfe8ff", label="FORMULARIO3"];
+
+    R_publica [shape=diamond, style=filled, fillcolor="#ffe8b3", label="publica"];
+    E_tutor_empresarial -- R_publica [label="1"];
+    R_publica -- E_oferta [label="N"];
+    R_recibe [shape=diamond, style=filled, fillcolor="#ffe8b3", label="recibe"];
+    E_oferta -- R_recibe [label="1"];
+    R_recibe -- E_postulacion [label="N"];
+    R_realiza [shape=diamond, style=filled, fillcolor="#ffe8b3", label="realiza"];
+    E_estudiante -- R_realiza [label="1"];
+    R_realiza -- E_postulacion [label="N"];
+    R_valida [shape=diamond, style=filled, fillcolor="#ffe8b3", label="valida"];
+    E_coordinador_vinculacion -- R_valida [label="1"];
+    R_valida -- E_postulacion [label="N"];
+    R_genera [shape=diamond, style=filled, fillcolor="#ffe8b3", label="genera"];
+    E_postulacion -- R_genera [label="1"];
+    R_genera -- E_practica [label="1"];
+    R_dirige [shape=diamond, style=filled, fillcolor="#ffe8b3", label="dirige"];
+    E_tutor_academico -- R_dirige [label="1"];
+    R_dirige -- E_practica [label="N"];
+    R_supervisa [shape=diamond, style=filled, fillcolor="#ffe8b3", label="supervisa"];
+    E_tutor_empresarial -- R_supervisa [label="1"];
+    R_supervisa -- E_practica [label="N"];
+    R_envia [shape=diamond, style=filled, fillcolor="#ffe8b3", label="envia"];
+    E_estudiante -- R_envia [label="1"];
+    R_envia -- E_solicitud [label="N"];
+    R_documenta_f1 [shape=diamond, style=filled, fillcolor="#ffe8b3", label="documenta_f1"];
+    E_practica -- R_documenta_f1 [label="1"];
+    R_documenta_f1 -- E_formulario1 [label="1"];
+    R_documenta_f2 [shape=diamond, style=filled, fillcolor="#ffe8b3", label="documenta_f2"];
+    E_practica -- R_documenta_f2 [label="1"];
+    R_documenta_f2 -- E_formulario2 [label="1"];
+    R_documenta_f3 [shape=diamond, style=filled, fillcolor="#ffe8b3", label="documenta_f3"];
+    E_practica -- R_documenta_f3 [label="1"];
+    R_documenta_f3 -- E_formulario3 [label="1"];
+}
