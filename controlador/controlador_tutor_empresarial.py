@@ -35,15 +35,6 @@ class ControladorTutorEmpresarial:
     def iniciar(self):
         self.vista_menu.show()
 
-    def cargar_datos(self):
-        self.repo_empresas.recargar()
-        self.repo_academicos.recargar()
-        self.repo_ofertas.recargar()
-        self.repo_postulaciones.recargar()
-        self.repo_estudiantes.recargar()
-        self.repo_practicas.recargar()
-        self.repo_formularios2.recargar()
-
     def mi_perfil(self):
         return self.repo_empresas.buscar(self.cedula_tutor)
 
@@ -106,7 +97,6 @@ class ControladorTutorEmpresarial:
         self.pintar_tabla(self.v_practicas.tblPracticas, activas, self.fila_practica_activa)
 
     def preparar_ofertas(self):
-        self.cargar_datos()
         perfil = self.mi_perfil()
         self.v_ofertas.lblEmpresaNombre.setText(perfil.nombre_empresa if perfil else "N/A")
         self.refrescar_tabla_ofertas()
@@ -134,7 +124,6 @@ class ControladorTutorEmpresarial:
             VistaError(str(e), self.v_ofertas).exec()
 
     def refrescar_tabla_ternas(self):
-        self.cargar_datos()
         perfil = self.mi_perfil()
         rucs = perfil.ruc_empresa if perfil else None
         enviadas = list(filter(
@@ -185,7 +174,6 @@ class ControladorTutorEmpresarial:
         return disponibles[0] if disponibles else None
 
     def slot_cargar_form2(self):
-        self.cargar_datos()
         try:
             id_practica = parsear_id(self.v_form2.txtIdPractica.text(), "ID de la práctica")
             practica = self.repo_practicas.buscar(id_practica)

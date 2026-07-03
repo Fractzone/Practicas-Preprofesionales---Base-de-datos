@@ -47,10 +47,6 @@ class RepositorioTutorAcademico:
     def __init__(self, persistencia):
         self.persistencia = persistencia
 
-    def recargar(self):
-        # Compatibilidad: ya no hay caché en memoria; cada método consulta la BD.
-        pass
-
     def actualizar(self, tutor):
         self.persistencia.actualizar(self.ENTIDAD, tutor)
 
@@ -104,10 +100,6 @@ class RepositorioTutorEmpresarial:
 
     def __init__(self, persistencia):
         self.persistencia = persistencia
-
-    def recargar(self):
-        # Compatibilidad: ya no hay caché en memoria; cada método consulta la BD.
-        pass
 
     def actualizar(self, tutor):
         self.persistencia.actualizar(self.ENTIDAD, tutor)
@@ -166,10 +158,6 @@ class RepositorioCoordinadorVinculacion:
 
     def __init__(self, persistencia):
         self.persistencia = persistencia
-
-    def recargar(self):
-        # Compatibilidad: ya no hay caché en memoria; cada método consulta la BD.
-        pass
 
     def actualizar(self, coordinador):
         self.persistencia.actualizar(self.ENTIDAD, coordinador)

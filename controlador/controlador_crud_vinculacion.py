@@ -35,7 +35,6 @@ class ControladorCRUDVinculacion:
         return [c.cedula, c.nombres, c.apellidos, c.telefono, c.email, c.direccion, c.carrera]
 
     def refrescar_tabla(self):
-        self.repo.recargar()
         self.pintar_tabla(self.vista.tblPersonal, self.repo.listar(), self.fila)
 
     def limpiar(self):

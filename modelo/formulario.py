@@ -51,10 +51,6 @@ class RepositorioFormulario1:
     def __init__(self, persistencia):
         self.persistencia = persistencia
 
-    def recargar(self):
-        # Compatibilidad: ya no hay caché en memoria; cada método consulta la BD.
-        pass
-
     def actualizar(self, formulario):
         self.persistencia.actualizar(self.ENTIDAD, formulario)
 
@@ -141,10 +137,6 @@ class RepositorioFormulario2:
 
     def __init__(self, persistencia):
         self.persistencia = persistencia
-
-    def recargar(self):
-        # Compatibilidad: ya no hay caché en memoria; cada método consulta la BD.
-        pass
 
     def actualizar(self, formulario):
         self.persistencia.actualizar(self.ENTIDAD, formulario)
@@ -236,10 +228,6 @@ class RepositorioFormulario3:
 
     def __init__(self, persistencia):
         self.persistencia = persistencia
-
-    def recargar(self):
-        # Compatibilidad: ya no hay caché en memoria; cada método consulta la BD.
-        pass
 
     def actualizar(self, formulario):
         self.persistencia.actualizar(self.ENTIDAD, formulario)

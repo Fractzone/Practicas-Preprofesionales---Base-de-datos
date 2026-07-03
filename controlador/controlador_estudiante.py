@@ -38,16 +38,6 @@ class ControladorEstudiante:
     def iniciar(self):
         self.vista_menu.show()
 
-    def cargar_datos(self):
-        self.repo_ofertas.recargar()
-        self.repo_empresas.recargar()
-        self.repo_academicos.recargar()
-        self.repo_estudiantes.recargar()
-        self.repo_postulaciones.recargar()
-        self.repo_formularios1.recargar()
-        self.repo_practicas.recargar()
-        self.repo_solicitudes.recargar()
-
     def conectar_signals(self):
         self.vista_menu.actBuscarOferta.triggered.connect(
             lambda: (self.refrescar_tabla_ofertas(), self.v_ofertas.show()))
@@ -117,12 +107,10 @@ class ControladorEstudiante:
         self.pintar_tabla(self.v_ofertas.tblOfertas, self.repo_ofertas.detalle_disponibles(), self.fila_oferta)
 
     def refrescar_tabla_postulaciones(self):
-        self.cargar_datos()
         mis = self.repo_postulaciones.de_estudiante(self.cedula_estudiante)
         self.pintar_tabla(self.v_postulaciones.tblMisPostulaciones, mis, self.fila_postulacion)
 
     def refrescar_tabla_solicitudes(self):
-        self.cargar_datos()
         mis = self.repo_solicitudes.de_estudiante(self.cedula_estudiante)
         self.pintar_tabla(self.v_solicitudes.tblSolicitudes, mis, self.fila_solicitud)
 
@@ -190,14 +178,12 @@ class ControladorEstudiante:
         self.v_form1.lblTutorAcadVal.setText(datos["tutor_acad"])
 
     def preparar_formulario1(self):
-        self.cargar_datos()
         practica = self.practica_activa()
         if practica:
             self.v_form1.txtIdPractica.setText(str(practica.id_practica))
             self.pintar_cabecera_form1(practica)
 
     def slot_cargar_form1(self):
-        self.cargar_datos()
         try:
             id_practica = parsear_id(self.v_form1.txtIdPractica.text(), "ID de la práctica")
             practica = self.practica_de_estudiante(id_practica)
@@ -272,7 +258,6 @@ class ControladorEstudiante:
                   self.v_form1.lblTutorEmpVal, self.v_form1.lblTutorAcadVal]))
 
     def slot_solicitar_evaluacion(self):
-        self.cargar_datos()
         try:
             practica = self.practica_activa()
             if not practica:

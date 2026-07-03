@@ -43,10 +43,6 @@ class RepositorioEstudiante:
     def __init__(self, persistencia):
         self.persistencia = persistencia
 
-    def recargar(self):
-        # Compatibilidad: ya no hay caché en memoria; cada método consulta la BD.
-        pass
-
     def actualizar(self, estudiante):
         self.persistencia.actualizar(self.ENTIDAD, estudiante)
 

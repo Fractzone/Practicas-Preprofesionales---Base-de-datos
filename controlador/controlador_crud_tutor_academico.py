@@ -35,7 +35,6 @@ class ControladorCRUDTutorAcademico:
         return [t.cedula, t.nombres, t.apellidos, t.telefono, t.email, t.carrera]
 
     def refrescar_tabla(self):
-        self.repo.recargar()
         self.pintar_tabla(self.vista.tblPersonal, self.repo.listar(), self.fila)
 
     def limpiar(self):

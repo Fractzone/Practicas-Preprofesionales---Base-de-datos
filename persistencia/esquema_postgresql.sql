@@ -1,6 +1,16 @@
+--Creamos el esquema practicas si no existe
 CREATE SCHEMA IF NOT EXISTS practicas;
 SET search_path TO practicas;
 
+/*
+ El flujo del sql es
+ Python -> SQLAlchemy -> psycopg2 -> PostgresSQL
+
+ El programa maneja la eliminacion con elimincacion logica en cascada para no romper las relaciones
+ Existen las tablas para objetos y la tabla login, la cual solo guarda las credenciales y el rol, para una consulta mas optima
+ */
+
+-- Creacion de la tabla adminsitrradores
 CREATE TABLE IF NOT EXISTS practicas.administrador (
     usuario VARCHAR(20) PRIMARY KEY,
     contrasena VARCHAR(255) NOT NULL,
@@ -8,6 +18,7 @@ CREATE TABLE IF NOT EXISTS practicas.administrador (
     eliminado BOOLEAN NOT NULL DEFAULT FALSE
 );
 
+-- Creacion de la tabla login
 CREATE TABLE IF NOT EXISTS practicas.login (
     identificador VARCHAR(20) PRIMARY KEY,
     contrasena VARCHAR(255) NOT NULL,
@@ -17,6 +28,7 @@ CREATE TABLE IF NOT EXISTS practicas.login (
                    'tutor_empresarial','coordinador_vinculacion'))
 );
 
+-- Creacion de la tabla estudiantes
 CREATE TABLE IF NOT EXISTS practicas.estudiante (
     cedula VARCHAR(10) PRIMARY KEY,
     contrasena VARCHAR(255) NOT NULL,
@@ -34,6 +46,7 @@ CREATE TABLE IF NOT EXISTS practicas.estudiante (
     CHECK (total_horas_realizadas >= 0)
 );
 
+-- Creacion tutor academico
 CREATE TABLE IF NOT EXISTS practicas.tutor_academico (
     cedula VARCHAR(10) PRIMARY KEY,
     contrasena VARCHAR(255) NOT NULL,
@@ -45,6 +58,7 @@ CREATE TABLE IF NOT EXISTS practicas.tutor_academico (
     eliminado BOOLEAN NOT NULL DEFAULT FALSE
 );
 
+-- Creacion tabla tutor empresariaal
 CREATE TABLE IF NOT EXISTS practicas.tutor_empresarial (
     cedula VARCHAR(10) PRIMARY KEY,
     contrasena VARCHAR(255) NOT NULL,
@@ -59,6 +73,7 @@ CREATE TABLE IF NOT EXISTS practicas.tutor_empresarial (
     eliminado BOOLEAN NOT NULL DEFAULT FALSE
 );
 
+-- Creacion tabla coordinador de vinculacion
 CREATE TABLE IF NOT EXISTS practicas.coordinador_vinculacion (
     cedula VARCHAR(10) PRIMARY KEY,
     contrasena VARCHAR(255) NOT NULL,
@@ -72,6 +87,7 @@ CREATE TABLE IF NOT EXISTS practicas.coordinador_vinculacion (
     eliminado BOOLEAN NOT NULL DEFAULT FALSE
 );
 
+-- Creacion tabla de ofertas
 CREATE TABLE IF NOT EXISTS practicas.oferta (
     id_oferta INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     descripcion TEXT NOT NULL,
@@ -82,8 +98,8 @@ CREATE TABLE IF NOT EXISTS practicas.oferta (
     CONSTRAINT fk_oferta_ruc_empresa FOREIGN KEY (ruc_empresa)
         REFERENCES practicas.tutor_empresarial(ruc_empresa)
 );
-CREATE INDEX IF NOT EXISTS idx_oferta_ruc_empresa ON practicas.oferta (ruc_empresa);
 
+-- Crear tabla postulacion
 CREATE TABLE IF NOT EXISTS practicas.postulacion (
     id_postulacion INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     fecha DATE,
@@ -100,10 +116,8 @@ CREATE TABLE IF NOT EXISTS practicas.postulacion (
     CONSTRAINT fk_postulacion_id_coordinador FOREIGN KEY (id_coordinador)
         REFERENCES practicas.coordinador_vinculacion(cedula)
 );
-CREATE INDEX IF NOT EXISTS idx_postulacion_cedula_estudiante ON practicas.postulacion (cedula_estudiante);
-CREATE INDEX IF NOT EXISTS idx_postulacion_id_oferta ON practicas.postulacion (id_oferta);
-CREATE INDEX IF NOT EXISTS idx_postulacion_estado_validacion ON practicas.postulacion (estado_validacion);
 
+-- Crear tabla practica
 CREATE TABLE IF NOT EXISTS practicas.practica (
     id_practica INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     fecha_inicio DATE,
@@ -122,8 +136,8 @@ CREATE TABLE IF NOT EXISTS practicas.practica (
     CONSTRAINT fk_practica_id_tutor_empresarial FOREIGN KEY (id_tutor_empresarial)
         REFERENCES practicas.tutor_empresarial(cedula)
 );
-CREATE INDEX IF NOT EXISTS idx_practica_id_postulacion ON practicas.practica (id_postulacion);
 
+-- Crear tabla solicitud
 CREATE TABLE IF NOT EXISTS practicas.solicitud (
     id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     tipo VARCHAR(60) NOT NULL,
@@ -138,8 +152,8 @@ CREATE TABLE IF NOT EXISTS practicas.solicitud (
     CONSTRAINT fk_solicitud_cedula_estudiante FOREIGN KEY (cedula_estudiante)
         REFERENCES practicas.estudiante(cedula)
 );
-CREATE INDEX IF NOT EXISTS idx_solicitud_cedula_estudiante ON practicas.solicitud (cedula_estudiante);
 
+-- Crear tabla formulario
 CREATE TABLE IF NOT EXISTS practicas.formulario1 (
     id_formulario1 INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     id_practica INTEGER NOT NULL,
@@ -159,8 +173,8 @@ CREATE TABLE IF NOT EXISTS practicas.formulario1 (
     CONSTRAINT fk_formulario1_id_practica FOREIGN KEY (id_practica)
         REFERENCES practicas.practica(id_practica)
 );
-CREATE INDEX IF NOT EXISTS idx_formulario1_id_practica ON practicas.formulario1 (id_practica);
 
+-- Crear tabla fomrulario 2
 CREATE TABLE IF NOT EXISTS practicas.formulario2 (
     id_formulario2 INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     id_practica INTEGER NOT NULL,
@@ -177,8 +191,8 @@ CREATE TABLE IF NOT EXISTS practicas.formulario2 (
     CONSTRAINT fk_formulario2_id_practica FOREIGN KEY (id_practica)
         REFERENCES practicas.practica(id_practica)
 );
-CREATE INDEX IF NOT EXISTS idx_formulario2_id_practica ON practicas.formulario2 (id_practica);
 
+-- Crear tabbla formulario 3
 CREATE TABLE IF NOT EXISTS practicas.formulario3 (
     id_formulario3 INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     id_practica INTEGER NOT NULL,
@@ -192,8 +206,8 @@ CREATE TABLE IF NOT EXISTS practicas.formulario3 (
     CONSTRAINT fk_formulario3_id_practica FOREIGN KEY (id_practica)
         REFERENCES practicas.practica(id_practica)
 );
-CREATE INDEX IF NOT EXISTS idx_formulario3_id_practica ON practicas.formulario3 (id_practica);
 
+-- Creacion de views
 CREATE OR REPLACE VIEW practicas.vista_postulacion_detalle AS
 SELECT p.id_postulacion, p.estado_validacion, p.fecha, p.eliminado, p.cedula_estudiante,
        e.nombres AS est_nombres, e.apellidos AS est_apellidos, e.ciclo AS est_ciclo,
@@ -224,54 +238,75 @@ SELECT o.id_oferta, o.puesto, o.descripcion, o.fecha_publicacion, o.eliminado,
 FROM practicas.oferta o
 JOIN practicas.tutor_empresarial te ON o.ruc_empresa = te.ruc_empresa;
 
+CREATE OR REPLACE VIEW practicas.vista_estudiantes_destacados AS
+SELECT
+    e.cedula,
+    e.nombres,
+    e.apellidos,
+    COUNT(f3.id_formulario3) AS practicas_evaluadas,
+    ROUND(AVG(f3.calificacion_sobre_100), 2) AS promedio_calificacion
+FROM practicas.estudiante e
+LEFT JOIN practicas.postulacion p ON p.cedula_estudiante = e.cedula AND p.eliminado = FALSE
+LEFT JOIN practicas.practica pr ON pr.id_postulacion = p.id_postulacion AND pr.eliminado = FALSE
+LEFT JOIN practicas.formulario3 f3 ON f3.id_practica = pr.id_practica AND f3.eliminado = FALSE
+WHERE e.eliminado = FALSE
+GROUP BY e.cedula, e.nombres, e.apellidos
+HAVING AVG(f3.calificacion_sobre_100) > (
+    SELECT AVG(calificacion_sobre_100)
+    FROM practicas.formulario3
+    WHERE eliminado = FALSE
+)
+ORDER BY promedio_calificacion DESC;
+
+-- Insercion de datos
 INSERT INTO practicas.administrador (usuario, contrasena, email) VALUES
-    ('admin', '<hash de "admin">', 'admin@uce.edu.ec')
-ON CONFLICT (usuario) DO NOTHING;
+    ('admin', 'admin', 'admin@uce.edu.ec');
 
 INSERT INTO practicas.estudiante
-    (cedula, contrasena, apellidos, nombres, telefono, email, carrera, ciclo,
-     num_practicas_realizadas, total_horas_realizadas) VALUES
-    ('1032222224', '<hash>', 'Mendez', 'Carlos', '0991111111', 'carlos.mendez@ucuenca.edu.ec', 'Ingeniería de Software', 7, 0, 0),
-    ('2451212126', '<hash>', 'Paz', 'Lucia', '0992222222', 'lucia.paz@ucuenca.edu.ec', 'Ingeniería de Software', 8, 1, 240),
-    ('1846543211', '<hash>', 'Vargas', 'Diego', '0993333333', 'diego.vargas@ucuenca.edu.ec', 'Ingeniería Civil', 9, 0, 0)
-ON CONFLICT (cedula) DO NOTHING;
+(cedula, contrasena, apellidos, nombres, telefono, email, carrera, ciclo,
+ num_practicas_realizadas, total_horas_realizadas) VALUES
+   ('1032222224', 'est123', 'Mendez', 'Carlos', '0991111111', 'carlos.mendez@ucuenca.edu.ec', 'Ingeniería de Software', 7, 0, 0),
+   ('2451212126', 'est123', 'Paz', 'Lucia', '0992222222', 'lucia.paz@ucuenca.edu.ec', 'Ingeniería de Software', 8, 1, 240),
+   ('1846543211', 'est123', 'Vargas', 'Diego', '0993333333', 'diego.vargas@ucuenca.edu.ec', 'Ingeniería Civil', 9, 0, 0);
 
 INSERT INTO practicas.tutor_academico
-    (cedula, contrasena, nombres, apellidos, telefono, email, carrera) VALUES
-    ('0123456782', '<hash>', 'Hugo', 'Añazco', '0919265583', 'hugo.anazco@ucuenca.edu.ec', 'Ingeniería de Software'),
-    ('0912345675', '<hash>', 'Eric', 'Martinez', '0992371889', 'eric.martinez@ucuenca.edu.ec', 'Ingeniería Civil')
-ON CONFLICT (cedula) DO NOTHING;
+(cedula, contrasena, nombres, apellidos, telefono, email, carrera) VALUES
+   ('0123456782', 'ta123', 'Hugo', 'Añazco', '0919265583', 'hugo.anazco@ucuenca.edu.ec', 'Ingeniería de Software'),
+   ('0912345675', 'ta123', 'Eric', 'Martinez', '0992371889', 'eric.martinez@ucuenca.edu.ec', 'Ingeniería Civil');
 
 INSERT INTO practicas.tutor_empresarial
-    (cedula, contrasena, nombres, apellidos, telefono, email, cargo, ruc_empresa,
-     nombre_empresa, direccion_empresa) VALUES
-    ('0107778889', '<hash>', 'Roberto', 'Arias', '0995377124', 'roberto@autofact.com', 'Gerente de TI', '0101010106001', 'AutoFact', 'Av. de las Américas & Simón Bolívar'),
-    ('0108889990', '<hash>', 'Camila', 'Ortiz', '0908699931', 'camila@optisolver.com', 'Líder de Desarrollo', '0920202025001', 'OptiSolver', 'Calle Larga & Hermano Miguel')
-ON CONFLICT (cedula) DO NOTHING;
+(cedula, contrasena, nombres, apellidos, telefono, email, cargo, ruc_empresa,
+ nombre_empresa, direccion_empresa) VALUES
+    ('0107778889', 'te123', 'Roberto', 'Arias', '0995377124', 'roberto@autofact.com', 'Gerente de TI', '0101010106001', 'AutoFact', 'Av. de las Américas & Simón Bolívar'),
+    ('0108889990', 'te123', 'Camila', 'Ortiz', '0908699931', 'camila@optisolver.com', 'Líder de Desarrollo', '0920202025001', 'OptiSolver', 'Calle Larga & Hermano Miguel');
 
 INSERT INTO practicas.coordinador_vinculacion
-    (cedula, contrasena, nombres, apellidos, telefono, email, fecha_nacimiento, direccion, carrera) VALUES
-    ('0755555554', '<hash>', 'Manuel', 'Perez', '0994444444', 'manuel.perez@ucuenca.edu.ec', '1980-05-15', 'Cuenca, Azuay', 'Ingeniería de Software')
-ON CONFLICT (cedula) DO NOTHING;
+(cedula, contrasena, nombres, apellidos, telefono, email, fecha_nacimiento, direccion, carrera) VALUES
+    ('0755555554', 'cv123', 'Manuel', 'Perez', '0994444444', 'manuel.perez@ucuenca.edu.ec', '1980-05-15', 'Cuenca, Azuay', 'Ingeniería de Software');
 
 INSERT INTO practicas.oferta (descripcion, puesto, fecha_publicacion, ruc_empresa) VALUES
-    ('Desarrollo de API REST', 'Pasante Backend', '2026-03-01', '0101010106001'),
-    ('Creación de interfaces web', 'Pasante Frontend', '2026-10-02', '0920202025001');
+   ('Desarrollo de API REST', 'Pasante Backend', '2026-03-01', '0101010106001'),
+   ('Creación de interfaces web', 'Pasante Frontend', '2026-10-02', '0920202025001');
 
 INSERT INTO practicas.postulacion (fecha, estado_validacion, cedula_estudiante, id_oferta) VALUES
-    ('2026-03-04', 'Pendiente', '1032222224',
-        (SELECT id_oferta FROM practicas.oferta WHERE puesto = 'Pasante Backend')),
-    ('2026-10-11', 'Pendiente', '2451212126',
-        (SELECT id_oferta FROM practicas.oferta WHERE puesto = 'Pasante Frontend'));
+   ('2026-03-04', 'Pendiente', '1032222224',
+    (SELECT id_oferta FROM practicas.oferta WHERE puesto = 'Pasante Backend')),
+   ('2026-10-11', 'Pendiente', '2451212126',
+    (SELECT id_oferta FROM practicas.oferta WHERE puesto = 'Pasante Frontend'));
 
 INSERT INTO practicas.login (identificador, contrasena, rol) VALUES
-    ('admin', '<hash>', 'administrador'),
-    ('1032222224', '<hash>', 'estudiante'),
-    ('2451212126', '<hash>', 'estudiante'),
-    ('1846543211', '<hash>', 'estudiante'),
-    ('0123456782', '<hash>', 'tutor_academico'),
-    ('0912345675', '<hash>', 'tutor_academico'),
-    ('0107778889', '<hash>', 'tutor_empresarial'),
-    ('0108889990', '<hash>', 'tutor_empresarial'),
-    ('0755555554', '<hash>', 'coordinador_vinculacion')
-ON CONFLICT (identificador) DO NOTHING;
+     ('admin', 'admin', 'administrador'),
+     ('1032222224', 'est123', 'estudiante'),
+     ('2451212126', 'est123', 'estudiante'),
+     ('1846543211', 'est123', 'estudiante'),
+     ('0123456782', 'ta123', 'tutor_academico'),
+     ('0912345675', 'ta123', 'tutor_academico'),
+     ('0107778889', 'te123', 'tutor_empresarial'),
+     ('0108889990', 'te123', 'tutor_empresarial'),
+     ('0755555554', 'cv123', 'coordinador_vinculacion');
+
+-- Querys de ejemplo
+SELECT * From practicas.vista_postulacion_detalle;
+SELECT * From practicas.vista_practica_detalle;
+SELECT * From practicas.vista_oferta_detalle;
+SELECT * From practicas.vista_estudiantes_destacados;

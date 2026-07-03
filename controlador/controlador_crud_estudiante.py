@@ -38,7 +38,6 @@ class ControladorCRUDEstudiante:
                 e.carrera, e.ciclo, e.total_horas_realizadas]
 
     def refrescar_tabla(self):
-        self.repo.recargar()
         self.pintar_tabla(self.vista.tblPersonal, self.repo.listar(), self.fila)
 
     def limpiar(self):

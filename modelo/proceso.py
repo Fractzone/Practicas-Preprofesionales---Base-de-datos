@@ -25,10 +25,6 @@ class RepositorioOferta:
     def __init__(self, persistencia):
         self.persistencia = persistencia
 
-    def recargar(self):
-        # Compatibilidad: ya no hay caché en memoria; cada método consulta la BD.
-        pass
-
     def actualizar(self, oferta):
         self.persistencia.actualizar(self.ENTIDAD, oferta)
 
@@ -79,10 +75,6 @@ class RepositorioPostulacion:
 
     def __init__(self, persistencia):
         self.persistencia = persistencia
-
-    def recargar(self):
-        # Compatibilidad: ya no hay caché en memoria; cada método consulta la BD.
-        pass
 
     def actualizar(self, postulacion):
         self.persistencia.actualizar(self.ENTIDAD, postulacion)
@@ -158,10 +150,6 @@ class RepositorioPractica:
     def __init__(self, persistencia):
         self.persistencia = persistencia
 
-    def recargar(self):
-        # Compatibilidad: ya no hay caché en memoria; cada método consulta la BD.
-        pass
-
     def actualizar(self, practica):
         self.persistencia.actualizar(self.ENTIDAD, practica)
 
@@ -181,18 +169,6 @@ class RepositorioPractica:
             where="estado = ANY(%s) AND id_postulacion = ANY(%s)",
             params=(list(estados), list(ids_postulacion)))
         return practicas[0] if practicas else None
-
-    def por_tutor_academico(self, cedula, estados):
-        return self.persistencia.listar(
-            self.ENTIDAD,
-            where="id_tutor_academico = %s AND estado = ANY(%s)",
-            params=(cedula, list(estados)))
-
-    def por_tutor_empresarial(self, cedula, estados):
-        return self.persistencia.listar(
-            self.ENTIDAD,
-            where="id_tutor_empresarial = %s AND estado = ANY(%s)",
-            params=(cedula, list(estados)))
 
     def de_postulaciones(self, ids_postulacion):
         return self.persistencia.listar(
@@ -231,10 +207,6 @@ class RepositorioSolicitud:
 
     def __init__(self, persistencia):
         self.persistencia = persistencia
-
-    def recargar(self):
-        # Compatibilidad: ya no hay caché en memoria; cada método consulta la BD.
-        pass
 
     def actualizar(self, solicitud):
         self.persistencia.actualizar(self.ENTIDAD, solicitud)

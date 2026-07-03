@@ -36,7 +36,6 @@ class ControladorCRUDAdministrador:
         return [a.usuario, "••••••••", a.email]
 
     def refrescar_tabla(self):
-        self.repo.recargar()
         self.pintar_tabla(self.vista.tblPersonal, self.repo.listar(), self.fila)
 
     def limpiar(self):

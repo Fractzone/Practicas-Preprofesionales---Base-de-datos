@@ -36,17 +36,6 @@ class ControladorTutorAcademico:
     def iniciar(self):
         self.vista_menu.show()
 
-    def cargar_datos(self):
-        self.repo_academicos.recargar()
-        self.repo_empresas.recargar()
-        self.repo_estudiantes.recargar()
-        self.repo_postulaciones.recargar()
-        self.repo_ofertas.recargar()
-        self.repo_practicas.recargar()
-        self.repo_formularios1.recargar()
-        self.repo_formularios2.recargar()
-        self.repo_formularios3.recargar()
-
     def conectar_signals(self):
         self.vista_menu.actAprobarF1.triggered.connect(
             lambda: (self.refrescar_tabla_pendientes(), self.v_aprobar.show()))
@@ -104,7 +93,6 @@ class ControladorTutorAcademico:
         return list(filter(lambda par: par[1] is not None and par[1].estado_aprobacion == "Pendiente", pares))
 
     def refrescar_tabla_pendientes(self):
-        self.cargar_datos()
         self.pintar_tabla(self.v_aprobar.tblPendientes, self.pendientes_f1(), self.fila_pendiente)
 
     def fila_practica(self, d):
@@ -124,7 +112,6 @@ class ControladorTutorAcademico:
         return practica
 
     def slot_ver_detalle(self):
-        self.cargar_datos()
         try:
             id_practica = parsear_id(self.v_aprobar.txtIdPractica.text(), "ID de la práctica")
             practica = self.buscar_practica(id_practica)
@@ -166,7 +153,6 @@ class ControladorTutorAcademico:
             VistaError(str(e), self.v_aprobar).exec()
 
     def slot_cargar_form3(self):
-        self.cargar_datos()
         try:
             id_practica = parsear_id(self.v_form3.txtIdPractica.text(), "ID de la práctica")
             practica = self.buscar_practica(id_practica)

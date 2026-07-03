@@ -36,13 +36,6 @@ class ControladorCoordinadorVinculacion:
     def iniciar(self):
         self.vista_menu.show()
 
-    def cargar_datos(self):
-        self.repo_postulaciones.recargar()
-        self.repo_estudiantes.recargar()
-        self.repo_ofertas.recargar()
-        self.repo_empresas.recargar()
-        self.repo_solicitudes.recargar()
-
     def conectar_signals(self):
         self.vista_menu.actValidarPostulacion.triggered.connect(
             lambda: (self.refrescar_tabla_validacion(), self.v_validar.show()))
@@ -125,7 +118,6 @@ class ControladorCoordinadorVinculacion:
                 estudiante.ciclo, estudiante.num_practicas_realizadas, estudiante.total_horas_realizadas]
 
     def refrescar_tabla_estudiantes(self):
-        self.cargar_datos()
         self.pintar_tabla(self.v_estudiantes.tblEstudiantes, self.repo_estudiantes.listar(), self.fila_estudiante)
 
     def fila_solicitud(self, sol):
@@ -176,7 +168,6 @@ class ControladorCoordinadorVinculacion:
             VistaError(str(e), self.v_validar).exec()
 
     def cargar_combo_ofertas(self):
-        self.cargar_datos()
         self.v_ternas.cmbOfertas.clear()
         self.v_ternas.cmbOfertas.addItem("-- Seleccione una oferta --", None)
         list(map(
@@ -226,7 +217,6 @@ class ControladorCoordinadorVinculacion:
             VistaError(str(e), self.v_ternas).exec()
 
     def refrescar_tabla_empresas(self):
-        self.repo_empresas.recargar()
         self.pintar_tabla(self.v_empresas.tblEmpresas, self.repo_empresas.listar(), self.fila_empresa)
 
     def limpiar_form_empresa(self):
@@ -291,7 +281,6 @@ class ControladorCoordinadorVinculacion:
         self.v_empresas.txtEmail.setText(datos.get("email", ""))
 
     def refrescar_tabla_solicitudes(self):
-        self.cargar_datos()
         self.pintar_tabla(self.v_bandeja.tblSolicitudes, self.repo_solicitudes.listar(), self.fila_solicitud)
 
     def slot_aprobar_solicitud(self):
