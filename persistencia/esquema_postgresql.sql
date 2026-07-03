@@ -1,128 +1,97 @@
--- =====================================================================
--- Esquema PostgreSQL del Sistema de Prácticas Preprofesionales
--- =====================================================================
--- Este script documenta el esquema que la aplicación crea automáticamente
--- al arrancar (de forma idempotente) desde persistencia/gestor_persistencia.py.
---
--- Características del modelo:
---   * Claves naturales donde corresponde (administrador.usuario, login.identificador,
---     cédula de estudiante/tutores/coordinador) -> VARCHAR.
---   * Identificadores subrogados generados por la BASE DE DATOS con
---     GENERATED ALWAYS AS IDENTITY (oferta, postulacion, practica, solicitud,
---     formularios) -> INTEGER. La aplicación los recupera con INSERT ... RETURNING.
---   * Integridad referencial mediante CLAVES FORÁNEAS (sin ON DELETE CASCADE:
---     el borrado es lógico vía la columna `eliminado`).
---   * Restricciones NOT NULL, UNIQUE y CHECK que reflejan las reglas de negocio.
---   * Fechas como DATE (la app las convierte desde/hacia "dd/MM/yyyy").
---   * Dinero/nota como NUMERIC (no coma flotante).
---   * Estructuras anidadas (actividades, rúbricas, datos de empresa) como JSONB.
---   * Las contraseñas se almacenan CIFRADAS (hash PBKDF2 con sal); por eso
---     `contrasena` es VARCHAR(255). Nunca se guarda la contraseña en texto plano.
---   * Los datos de empresa viven embebidos en tutor_empresarial; oferta los
---     referencia por el RUC (UNIQUE en tutor_empresarial).
--- =====================================================================
-
 CREATE SCHEMA IF NOT EXISTS practicas;
 SET search_path TO practicas;
 
--- ----------------------------- Usuarios ------------------------------
-
 CREATE TABLE IF NOT EXISTS practicas.administrador (
-    usuario     VARCHAR(20) PRIMARY KEY,
-    contrasena  VARCHAR(255) NOT NULL,   -- hash con sal
-    email       VARCHAR(120) NOT NULL,
-    eliminado   BOOLEAN NOT NULL DEFAULT FALSE
+    usuario VARCHAR(20) PRIMARY KEY,
+    contrasena VARCHAR(255) NOT NULL,
+    email VARCHAR(120) NOT NULL,
+    eliminado BOOLEAN NOT NULL DEFAULT FALSE
 );
 
--- Credenciales de acceso de todos los roles.
--- identificador NO lleva FK: puede ser el usuario del admin o la cédula de
--- estudiante/tutores/coordinador (no hay una sola tabla destino).
 CREATE TABLE IF NOT EXISTS practicas.login (
     identificador VARCHAR(20) PRIMARY KEY,
-    contrasena    VARCHAR(255) NOT NULL,  -- hash con sal
-    rol           VARCHAR(30) NOT NULL,
-    eliminado     BOOLEAN NOT NULL DEFAULT FALSE,
+    contrasena VARCHAR(255) NOT NULL,
+    rol VARCHAR(30) NOT NULL,
+    eliminado BOOLEAN NOT NULL DEFAULT FALSE,
     CHECK (rol IN ('administrador','estudiante','tutor_academico',
                    'tutor_empresarial','coordinador_vinculacion'))
 );
 
 CREATE TABLE IF NOT EXISTS practicas.estudiante (
-    cedula                   VARCHAR(10) PRIMARY KEY,
-    contrasena               VARCHAR(255) NOT NULL,
-    apellidos                VARCHAR(100) NOT NULL,
-    nombres                  VARCHAR(100) NOT NULL,
-    telefono                 VARCHAR(10) NOT NULL,
-    email                    VARCHAR(120) NOT NULL UNIQUE,
-    carrera                  VARCHAR(100) NOT NULL,
-    ciclo                    INTEGER NOT NULL,
+    cedula VARCHAR(10) PRIMARY KEY,
+    contrasena VARCHAR(255) NOT NULL,
+    apellidos VARCHAR(100) NOT NULL,
+    nombres VARCHAR(100) NOT NULL,
+    telefono VARCHAR(10) NOT NULL,
+    email VARCHAR(120) NOT NULL UNIQUE,
+    carrera VARCHAR(100) NOT NULL,
+    ciclo INTEGER NOT NULL,
     num_practicas_realizadas INTEGER NOT NULL DEFAULT 0,
-    total_horas_realizadas   INTEGER NOT NULL DEFAULT 0,
-    eliminado                BOOLEAN NOT NULL DEFAULT FALSE,
+    total_horas_realizadas INTEGER NOT NULL DEFAULT 0,
+    eliminado BOOLEAN NOT NULL DEFAULT FALSE,
     CHECK (ciclo BETWEEN 1 AND 10),
     CHECK (num_practicas_realizadas >= 0),
     CHECK (total_horas_realizadas >= 0)
 );
 
 CREATE TABLE IF NOT EXISTS practicas.tutor_academico (
-    cedula      VARCHAR(10) PRIMARY KEY,
-    contrasena  VARCHAR(255) NOT NULL,
-    nombres     VARCHAR(100) NOT NULL,
-    apellidos   VARCHAR(100) NOT NULL,
-    telefono    VARCHAR(10) NOT NULL,
-    email       VARCHAR(120) NOT NULL UNIQUE,
-    carrera     VARCHAR(100) NOT NULL,
-    eliminado   BOOLEAN NOT NULL DEFAULT FALSE
+    cedula VARCHAR(10) PRIMARY KEY,
+    contrasena VARCHAR(255) NOT NULL,
+    nombres VARCHAR(100) NOT NULL,
+    apellidos VARCHAR(100) NOT NULL,
+    telefono VARCHAR(10) NOT NULL,
+    email VARCHAR(120) NOT NULL UNIQUE,
+    carrera VARCHAR(100) NOT NULL,
+    eliminado BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 CREATE TABLE IF NOT EXISTS practicas.tutor_empresarial (
-    cedula            VARCHAR(10) PRIMARY KEY,
-    contrasena        VARCHAR(255) NOT NULL,
-    nombres           VARCHAR(100) NOT NULL,
-    apellidos         VARCHAR(100) NOT NULL,
-    telefono          VARCHAR(10) NOT NULL,
-    email             VARCHAR(120) NOT NULL UNIQUE,
-    cargo             VARCHAR(100) NOT NULL,
-    ruc_empresa       VARCHAR(13) NOT NULL UNIQUE,
-    nombre_empresa    VARCHAR(150) NOT NULL,
+    cedula VARCHAR(10) PRIMARY KEY,
+    contrasena VARCHAR(255) NOT NULL,
+    nombres VARCHAR(100) NOT NULL,
+    apellidos VARCHAR(100) NOT NULL,
+    telefono VARCHAR(10) NOT NULL,
+    email VARCHAR(120) NOT NULL UNIQUE,
+    cargo VARCHAR(100) NOT NULL,
+    ruc_empresa VARCHAR(13) NOT NULL UNIQUE,
+    nombre_empresa VARCHAR(150) NOT NULL,
     direccion_empresa VARCHAR(255) NOT NULL,
-    eliminado         BOOLEAN NOT NULL DEFAULT FALSE
+    eliminado BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 CREATE TABLE IF NOT EXISTS practicas.coordinador_vinculacion (
-    cedula           VARCHAR(10) PRIMARY KEY,
-    contrasena       VARCHAR(255) NOT NULL,
-    nombres          VARCHAR(100) NOT NULL,
-    apellidos        VARCHAR(100) NOT NULL,
-    telefono         VARCHAR(10) NOT NULL,
-    email            VARCHAR(120) NOT NULL UNIQUE,
+    cedula VARCHAR(10) PRIMARY KEY,
+    contrasena VARCHAR(255) NOT NULL,
+    nombres VARCHAR(100) NOT NULL,
+    apellidos VARCHAR(100) NOT NULL,
+    telefono VARCHAR(10) NOT NULL,
+    email VARCHAR(120) NOT NULL UNIQUE,
     fecha_nacimiento DATE NOT NULL,
-    direccion        VARCHAR(255) NOT NULL,
-    carrera          VARCHAR(100) NOT NULL,
-    eliminado        BOOLEAN NOT NULL DEFAULT FALSE
+    direccion VARCHAR(255) NOT NULL,
+    carrera VARCHAR(100) NOT NULL,
+    eliminado BOOLEAN NOT NULL DEFAULT FALSE
 );
 
--- ----------------------- Proceso de prácticas ------------------------
-
 CREATE TABLE IF NOT EXISTS practicas.oferta (
-    id_oferta         INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    descripcion       TEXT NOT NULL,
-    puesto            VARCHAR(100) NOT NULL,
+    id_oferta INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    descripcion TEXT NOT NULL,
+    puesto VARCHAR(100) NOT NULL,
     fecha_publicacion DATE,
-    ruc_empresa       VARCHAR(13) NOT NULL,
-    eliminado         BOOLEAN NOT NULL DEFAULT FALSE,
+    ruc_empresa VARCHAR(13) NOT NULL,
+    eliminado BOOLEAN NOT NULL DEFAULT FALSE,
     CONSTRAINT fk_oferta_ruc_empresa FOREIGN KEY (ruc_empresa)
         REFERENCES practicas.tutor_empresarial(ruc_empresa)
 );
 CREATE INDEX IF NOT EXISTS idx_oferta_ruc_empresa ON practicas.oferta (ruc_empresa);
 
 CREATE TABLE IF NOT EXISTS practicas.postulacion (
-    id_postulacion    INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    fecha             DATE,
+    id_postulacion INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    fecha DATE,
     estado_validacion VARCHAR(20) NOT NULL,
     cedula_estudiante VARCHAR(10) NOT NULL,
-    id_oferta         INTEGER NOT NULL,
-    id_coordinador    VARCHAR(10),
-    eliminado         BOOLEAN NOT NULL DEFAULT FALSE,
+    id_oferta INTEGER NOT NULL,
+    id_coordinador VARCHAR(10),
+    eliminado BOOLEAN NOT NULL DEFAULT FALSE,
     CHECK (estado_validacion IN ('Pendiente','Validada','Enviada','Aceptada','Rechazada')),
     CONSTRAINT fk_postulacion_cedula_estudiante FOREIGN KEY (cedula_estudiante)
         REFERENCES practicas.estudiante(cedula),
@@ -136,14 +105,14 @@ CREATE INDEX IF NOT EXISTS idx_postulacion_id_oferta ON practicas.postulacion (i
 CREATE INDEX IF NOT EXISTS idx_postulacion_estado_validacion ON practicas.postulacion (estado_validacion);
 
 CREATE TABLE IF NOT EXISTS practicas.practica (
-    id_practica          INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    fecha_inicio         DATE,
-    fecha_fin            DATE,
-    estado               VARCHAR(30) NOT NULL,
-    id_postulacion       INTEGER NOT NULL,
-    id_tutor_academico   VARCHAR(10),
+    id_practica INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    fecha_inicio DATE,
+    fecha_fin DATE,
+    estado VARCHAR(30) NOT NULL,
+    id_postulacion INTEGER NOT NULL,
+    id_tutor_academico VARCHAR(10),
     id_tutor_empresarial VARCHAR(10),
-    eliminado            BOOLEAN NOT NULL DEFAULT FALSE,
+    eliminado BOOLEAN NOT NULL DEFAULT FALSE,
     CHECK (estado IN ('En progreso','En Ejecución','Evaluación Solicitada',
                       'Pendiente Nota','Finalizada / Aprobada')),
     CONSTRAINT fk_practica_id_postulacion FOREIGN KEY (id_postulacion)
@@ -156,14 +125,14 @@ CREATE TABLE IF NOT EXISTS practicas.practica (
 CREATE INDEX IF NOT EXISTS idx_practica_id_postulacion ON practicas.practica (id_postulacion);
 
 CREATE TABLE IF NOT EXISTS practicas.solicitud (
-    id                INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    tipo              VARCHAR(60) NOT NULL,
-    motivo            TEXT NOT NULL,
-    estado            VARCHAR(20) NOT NULL,
+    id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    tipo VARCHAR(60) NOT NULL,
+    motivo TEXT NOT NULL,
+    estado VARCHAR(20) NOT NULL,
     cedula_estudiante VARCHAR(10) NOT NULL,
-    fecha             DATE,
-    datos_empresa     JSONB,
-    eliminado         BOOLEAN NOT NULL DEFAULT FALSE,
+    fecha DATE,
+    datos_empresa JSONB,
+    eliminado BOOLEAN NOT NULL DEFAULT FALSE,
     CHECK (estado IN ('Pendiente','Aprobada','Rechazada')),
     CHECK (tipo IN ('Autorización de Empresa Propia','Emisión de Certificado/Oficio')),
     CONSTRAINT fk_solicitud_cedula_estudiante FOREIGN KEY (cedula_estudiante)
@@ -171,21 +140,19 @@ CREATE TABLE IF NOT EXISTS practicas.solicitud (
 );
 CREATE INDEX IF NOT EXISTS idx_solicitud_cedula_estudiante ON practicas.solicitud (cedula_estudiante);
 
--- ------------------------------ Formularios --------------------------
-
 CREATE TABLE IF NOT EXISTS practicas.formulario1 (
-    id_formulario1    INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    id_practica       INTEGER NOT NULL,
-    tipo_documento    VARCHAR(40) NOT NULL,
-    numero_documento  VARCHAR(50) NOT NULL,
-    tipo_practica     VARCHAR(30) NOT NULL,
-    remuneracion      NUMERIC(10,2) NOT NULL,
-    fecha_inicial     DATE,
+    id_formulario1 INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    id_practica INTEGER NOT NULL,
+    tipo_documento VARCHAR(40) NOT NULL,
+    numero_documento VARCHAR(50) NOT NULL,
+    tipo_practica VARCHAR(30) NOT NULL,
+    remuneracion NUMERIC(10,2) NOT NULL,
+    fecha_inicial DATE,
     fecha_final_aprox DATE,
-    horas_aprox       INTEGER NOT NULL,
-    actividades       JSONB NOT NULL,
+    horas_aprox INTEGER NOT NULL,
+    actividades JSONB NOT NULL,
     estado_aprobacion VARCHAR(20) NOT NULL,
-    eliminado         BOOLEAN NOT NULL DEFAULT FALSE,
+    eliminado BOOLEAN NOT NULL DEFAULT FALSE,
     CHECK (estado_aprobacion IN ('Pendiente','Aprobado')),
     CHECK (remuneracion >= 0),
     CHECK (horas_aprox > 0),
@@ -195,16 +162,16 @@ CREATE TABLE IF NOT EXISTS practicas.formulario1 (
 CREATE INDEX IF NOT EXISTS idx_formulario1_id_practica ON practicas.formulario1 (id_practica);
 
 CREATE TABLE IF NOT EXISTS practicas.formulario2 (
-    id_formulario2         INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    id_practica            INTEGER NOT NULL,
-    fecha_real_inicio      DATE,
-    fecha_real_fin         DATE,
-    horas_cumplidas        INTEGER NOT NULL,
+    id_formulario2 INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    id_practica INTEGER NOT NULL,
+    fecha_real_inicio DATE,
+    fecha_real_fin DATE,
+    horas_cumplidas INTEGER NOT NULL,
     calificaciones_rubrica JSONB NOT NULL,
-    productos_relevantes   TEXT NOT NULL,
-    aspectos_relevantes    TEXT NOT NULL,
-    estado                 VARCHAR(20) NOT NULL,
-    eliminado              BOOLEAN NOT NULL DEFAULT FALSE,
+    productos_relevantes TEXT NOT NULL,
+    aspectos_relevantes TEXT NOT NULL,
+    estado VARCHAR(20) NOT NULL,
+    eliminado BOOLEAN NOT NULL DEFAULT FALSE,
     CHECK (horas_cumplidas > 0),
     CHECK (estado IN ('Completado')),
     CONSTRAINT fk_formulario2_id_practica FOREIGN KEY (id_practica)
@@ -213,22 +180,19 @@ CREATE TABLE IF NOT EXISTS practicas.formulario2 (
 CREATE INDEX IF NOT EXISTS idx_formulario2_id_practica ON practicas.formulario2 (id_practica);
 
 CREATE TABLE IF NOT EXISTS practicas.formulario3 (
-    id_formulario3         INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    id_practica            INTEGER NOT NULL,
-    campo_ocupacional      VARCHAR(150) NOT NULL,
+    id_formulario3 INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    id_practica INTEGER NOT NULL,
+    campo_ocupacional VARCHAR(150) NOT NULL,
     calificacion_sobre_100 NUMERIC(5,2) NOT NULL,
-    evaluacion_escenario   JSONB NOT NULL,
-    estado                 VARCHAR(20) NOT NULL,
-    eliminado              BOOLEAN NOT NULL DEFAULT FALSE,
+    evaluacion_escenario JSONB NOT NULL,
+    estado VARCHAR(20) NOT NULL,
+    eliminado BOOLEAN NOT NULL DEFAULT FALSE,
     CHECK (calificacion_sobre_100 BETWEEN 0 AND 100),
     CHECK (estado IN ('Completado')),
     CONSTRAINT fk_formulario3_id_practica FOREIGN KEY (id_practica)
         REFERENCES practicas.practica(id_practica)
 );
 CREATE INDEX IF NOT EXISTS idx_formulario3_id_practica ON practicas.formulario3 (id_practica);
-
--- ------------------------------- Vistas ------------------------------
--- Concentran los JOIN de los listados de la interfaz en la base de datos.
 
 CREATE OR REPLACE VIEW practicas.vista_postulacion_detalle AS
 SELECT p.id_postulacion, p.estado_validacion, p.fecha, p.eliminado, p.cedula_estudiante,
@@ -237,8 +201,8 @@ SELECT p.id_postulacion, p.estado_validacion, p.fecha, p.eliminado, p.cedula_est
        p.id_oferta, o.puesto AS oferta_puesto, o.descripcion AS oferta_descripcion,
        o.ruc_empresa, te.nombre_empresa
 FROM practicas.postulacion p
-JOIN practicas.estudiante e         ON p.cedula_estudiante = e.cedula
-JOIN practicas.oferta o             ON p.id_oferta = o.id_oferta
+JOIN practicas.estudiante e ON p.cedula_estudiante = e.cedula
+JOIN practicas.oferta o ON p.id_oferta = o.id_oferta
 JOIN practicas.tutor_empresarial te ON o.ruc_empresa = te.ruc_empresa;
 
 CREATE OR REPLACE VIEW practicas.vista_practica_detalle AS
@@ -249,27 +213,16 @@ SELECT pr.id_practica, pr.estado, pr.fecha_inicio, pr.fecha_fin, pr.eliminado,
        ta.nombres AS acad_nombres, ta.apellidos AS acad_apellidos,
        te.nombres AS emp_nombres, te.apellidos AS emp_apellidos, te.nombre_empresa
 FROM practicas.practica pr
-JOIN practicas.postulacion p            ON pr.id_postulacion = p.id_postulacion
-JOIN practicas.estudiante e             ON p.cedula_estudiante = e.cedula
-LEFT JOIN practicas.tutor_academico ta    ON pr.id_tutor_academico = ta.cedula
-LEFT JOIN practicas.tutor_empresarial te  ON pr.id_tutor_empresarial = te.cedula;
+JOIN practicas.postulacion p ON pr.id_postulacion = p.id_postulacion
+JOIN practicas.estudiante e ON p.cedula_estudiante = e.cedula
+LEFT JOIN practicas.tutor_academico ta ON pr.id_tutor_academico = ta.cedula
+LEFT JOIN practicas.tutor_empresarial te ON pr.id_tutor_empresarial = te.cedula;
 
 CREATE OR REPLACE VIEW practicas.vista_oferta_detalle AS
 SELECT o.id_oferta, o.puesto, o.descripcion, o.fecha_publicacion, o.eliminado,
        o.ruc_empresa, te.nombre_empresa
 FROM practicas.oferta o
 JOIN practicas.tutor_empresarial te ON o.ruc_empresa = te.ruc_empresa;
-
--- =====================================================================
--- Datos de ejemplo
--- ---------------------------------------------------------------------
--- La aplicación los inserta en el primer arranque (inicializar_datos_si_vacio).
--- Notas importantes para reproducir el sembrado manualmente:
---   * Las contraseñas reales se guardan CIFRADAS; los valores en claro que
---     aparecen abajo son ILUSTRATIVOS (la app calcula el hash antes de insertar).
---   * Los ids subrogados (oferta, postulacion, ...) los genera IDENTITY; por eso
---     NO se insertan a mano. En las dependencias se referencian con subconsultas.
--- =====================================================================
 
 INSERT INTO practicas.administrador (usuario, contrasena, email) VALUES
     ('admin', '<hash de "admin">', 'admin@uce.edu.ec')
@@ -301,19 +254,16 @@ INSERT INTO practicas.coordinador_vinculacion
     ('0755555554', '<hash>', 'Manuel', 'Perez', '0994444444', 'manuel.perez@ucuenca.edu.ec', '1980-05-15', 'Cuenca, Azuay', 'Ingeniería de Software')
 ON CONFLICT (cedula) DO NOTHING;
 
--- Ofertas (id_oferta lo genera IDENTITY)
 INSERT INTO practicas.oferta (descripcion, puesto, fecha_publicacion, ruc_empresa) VALUES
     ('Desarrollo de API REST', 'Pasante Backend', '2026-03-01', '0101010106001'),
     ('Creación de interfaces web', 'Pasante Frontend', '2026-10-02', '0920202025001');
 
--- Postulaciones (referencian la oferta por subconsulta, ya que el id es generado)
 INSERT INTO practicas.postulacion (fecha, estado_validacion, cedula_estudiante, id_oferta) VALUES
     ('2026-03-04', 'Pendiente', '1032222224',
         (SELECT id_oferta FROM practicas.oferta WHERE puesto = 'Pasante Backend')),
     ('2026-10-11', 'Pendiente', '2451212126',
         (SELECT id_oferta FROM practicas.oferta WHERE puesto = 'Pasante Frontend'));
 
--- Credenciales de acceso (la contraseña real es un hash)
 INSERT INTO practicas.login (identificador, contrasena, rol) VALUES
     ('admin', '<hash>', 'administrador'),
     ('1032222224', '<hash>', 'estudiante'),

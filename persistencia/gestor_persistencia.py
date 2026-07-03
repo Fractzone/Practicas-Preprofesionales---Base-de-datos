@@ -1,36 +1,3 @@
-"""
-Gestor de persistencia respaldado por PostgreSQL (sobre SQLAlchemy 2.0).
-
-Punto único de acceso a la base de datos. El esquema y el mapeo objeto↔tabla se
-declaran con SQLAlchemy Core (objetos `Table`) y el mapeo a las clases del modelo
-se hace de forma **imperativa** (`registry.map_imperatively`): las clases de
-`modelo/` permanecen intactas (no importan SQLAlchemy ni heredan de ninguna base),
-de modo que la separación por capas se conserva.
-
-SQLAlchemy se encarga de:
-  - Crear el esquema/tablas/índices/restricciones (FK, UNIQUE, CHECK, IDENTITY).
-  - Materializar las filas como objetos del modelo SIN llamar a `__init__` (no se
-    revalidan datos ya guardados), igual que la implementación manual anterior.
-  - Convertir tipos mediante `TypeDecorator`:
-        * FechaTexto  -> las fechas viajan como texto "dd/MM/yyyy" en la aplicación
-                         y como DATE en la base.
-        * ContrasenaHash -> las contraseñas se cifran (hash con sal) al escribir.
-        * JSONB       -> tipo nativo de PostgreSQL para diccionarios/listas.
-
-La API pública de esta clase NO cambia (obtener, existe, listar, insertar,
-actualizar, marcar_eliminado(s)(_por), consultar, transaccion, ...), por lo que
-los repositorios y controladores no se ven afectados.
-
-Transacciones
--------------
-Cada operación de escritura confirma por sí sola, salvo que se ejecute dentro de
-`with gestor.transaccion():`, en cuyo caso todas las escrituras del bloque se
-confirman juntas (o se revierten con rollback si algo falla). Admite anidamiento
-(solo el bloque más externo confirma).
-
-El borrado es lógico (columna `eliminado`); la cascada lógica vive en el código
-(controlador/eliminacion_cascada.py).
-"""
 from contextlib import contextmanager
 from datetime import date, datetime
 
@@ -59,7 +26,6 @@ from modelo.formulario import Formulario1, Formulario2, Formulario3
 FORMATO_FECHA = "%d/%m/%Y"
 _SCHEMA = CONFIG_BD.get("schema", "public")
 
-# Conjuntos de estados válidos (espejo de las máquinas de estado del modelo).
 ROLES = ("administrador", "estudiante", "tutor_academico",
          "tutor_empresarial", "coordinador_vinculacion")
 ESTADOS_POSTULACION = ("Pendiente", "Validada", "Enviada", "Aceptada", "Rechazada")
@@ -73,17 +39,11 @@ ESTADOS_FORM3 = ("Completado",)
 
 
 def _in(columna, valores):
-    """Expresión SQL `columna IN ('a','b',...)` para una restricción CHECK."""
     lista = ", ".join("'" + v.replace("'", "''") + "'" for v in valores)
     return f"{columna} IN ({lista})"
 
 
-# --------------------------------------------------------------------------- #
-# Tipos personalizados (reemplazan la conversión manual hacia/desde la base)
-# --------------------------------------------------------------------------- #
 class FechaTexto(TypeDecorator):
-    """Almacena DATE en la base, pero expone las fechas como texto 'dd/MM/yyyy'
-    en la aplicación (formato que usa toda la interfaz)."""
     impl = Date
     cache_ok = True
 
@@ -103,9 +63,6 @@ class FechaTexto(TypeDecorator):
 
 
 class ContrasenaHash(TypeDecorator):
-    """Cifra la contraseña (hash con sal) al escribir, si aún no está cifrada.
-    Al leer devuelve el hash almacenado tal cual (la verificación se hace en
-    modelo/seguridad.py)."""
     impl = String
     cache_ok = True
 
@@ -115,15 +72,11 @@ class ContrasenaHash(TypeDecorator):
         return value
 
 
-# --------------------------------------------------------------------------- #
-# Definición del esquema (SQLAlchemy Core) y mapeo imperativo a las clases
-# --------------------------------------------------------------------------- #
 metadata = MetaData(schema=_SCHEMA)
 mapper_registry = registry(metadata=metadata)
 
 
 def _falso():
-    """server_default para columnas BOOLEAN `eliminado`."""
     return text("FALSE")
 
 
@@ -183,8 +136,6 @@ tabla_tutor_empresarial = Table(
     Column("telefono", String(10), nullable=False),
     Column("email", String(120), nullable=False, unique=True),
     Column("cargo", String(100), nullable=False),
-    # ruc_empresa UNIQUE: regla "una empresa = un tutor empresarial"; es la columna
-    # referenciada por oferta.ruc_empresa.
     Column("ruc_empresa", String(13), nullable=False, unique=True),
     Column("nombre_empresa", String(150), nullable=False),
     Column("direccion_empresa", String(255), nullable=False),
@@ -231,7 +182,6 @@ tabla_postulacion = Table(
     CheckConstraint(_in("estado_validacion", ESTADOS_POSTULACION),
                     name="ck_postulacion_estado"),
 )
-# Índice adicional por estado (consultas de pendientes/validadas).
 Index("idx_postulacion_estado_validacion", tabla_postulacion.c.estado_validacion)
 
 tabla_practica = Table(
@@ -317,8 +267,6 @@ tabla_formulario3 = Table(
 )
 
 
-# Mapeo imperativo: asocia cada tabla con su clase del modelo sin tocar la clase.
-# 'solicitud' no tiene clase (se maneja como dict plano), por eso no se mapea.
 mapper_registry.map_imperatively(Administrador, tabla_administrador)
 mapper_registry.map_imperatively(Credencial, tabla_login)
 mapper_registry.map_imperatively(Estudiante, tabla_estudiante)
@@ -332,45 +280,39 @@ mapper_registry.map_imperatively(Formulario1, tabla_formulario1)
 mapper_registry.map_imperatively(Formulario2, tabla_formulario2)
 mapper_registry.map_imperatively(Formulario3, tabla_formulario3)
 
-# Configura los mappers de inmediato: deja listos los descriptores de cada columna
-# para que asignar atributos (en __init__ o al materializar con _crear) funcione
-# desde el primer uso, sin depender de que se ejecute antes una consulta ORM.
 mapper_registry.configure()
 
 
-# Catálogo de entidades: tabla, clase (o None si es dict) y nombre de la clave.
 ENTIDADES = {
-    "administrador":            (tabla_administrador, Administrador, "usuario"),
-    "login":                    (tabla_login, Credencial, "identificador"),
-    "estudiante":               (tabla_estudiante, Estudiante, "cedula"),
-    "tutor_academico":          (tabla_tutor_academico, TutorAcademico, "cedula"),
-    "tutor_empresarial":        (tabla_tutor_empresarial, TutorEmpresarial, "cedula"),
-    "coordinador_vinculacion":  (tabla_coordinador_vinculacion, CoordinadorVinculacion, "cedula"),
-    "oferta":                   (tabla_oferta, Oferta, "id_oferta"),
-    "postulacion":              (tabla_postulacion, Postulacion, "id_postulacion"),
-    "practica":                 (tabla_practica, Practica, "id_practica"),
-    "solicitud":                (tabla_solicitud, None, "id"),
-    "formulario1":              (tabla_formulario1, Formulario1, "id_formulario1"),
-    "formulario2":              (tabla_formulario2, Formulario2, "id_formulario2"),
-    "formulario3":              (tabla_formulario3, Formulario3, "id_formulario3"),
+    "administrador": (tabla_administrador, Administrador, "usuario"),
+    "login": (tabla_login, Credencial, "identificador"),
+    "estudiante": (tabla_estudiante, Estudiante, "cedula"),
+    "tutor_academico": (tabla_tutor_academico, TutorAcademico, "cedula"),
+    "tutor_empresarial": (tabla_tutor_empresarial, TutorEmpresarial, "cedula"),
+    "coordinador_vinculacion": (tabla_coordinador_vinculacion, CoordinadorVinculacion, "cedula"),
+    "oferta": (tabla_oferta, Oferta, "id_oferta"),
+    "postulacion": (tabla_postulacion, Postulacion, "id_postulacion"),
+    "practica": (tabla_practica, Practica, "id_practica"),
+    "solicitud": (tabla_solicitud, None, "id"),
+    "formulario1": (tabla_formulario1, Formulario1, "id_formulario1"),
+    "formulario2": (tabla_formulario2, Formulario2, "id_formulario2"),
+    "formulario3": (tabla_formulario3, Formulario3, "id_formulario3"),
 }
 
 
-# Vistas que cruzan tablas para los listados de la interfaz (los JOIN viven en la
-# base). Se crean/reemplazan después de las tablas; SQLAlchemy no gestiona vistas.
 def _ddl_vistas(s):
     return [
         f'''CREATE OR REPLACE VIEW "{s}".vista_postulacion_detalle AS
             SELECT p.id_postulacion, p.estado_validacion, p.fecha, p.eliminado,
                    p.cedula_estudiante,
-                   e.nombres  AS est_nombres,  e.apellidos AS est_apellidos,
-                   e.ciclo    AS est_ciclo,    e.num_practicas_realizadas AS est_num_practicas,
-                   e.carrera  AS est_carrera,
+                   e.nombres AS est_nombres, e.apellidos AS est_apellidos,
+                   e.ciclo AS est_ciclo, e.num_practicas_realizadas AS est_num_practicas,
+                   e.carrera AS est_carrera,
                    p.id_oferta, o.puesto AS oferta_puesto, o.descripcion AS oferta_descripcion,
                    o.ruc_empresa, te.nombre_empresa
             FROM "{s}".postulacion p
-            JOIN "{s}".estudiante e         ON p.cedula_estudiante = e.cedula
-            JOIN "{s}".oferta o             ON p.id_oferta = o.id_oferta
+            JOIN "{s}".estudiante e ON p.cedula_estudiante = e.cedula
+            JOIN "{s}".oferta o ON p.id_oferta = o.id_oferta
             JOIN "{s}".tutor_empresarial te ON o.ruc_empresa = te.ruc_empresa''',
         f'''CREATE OR REPLACE VIEW "{s}".vista_practica_detalle AS
             SELECT pr.id_practica, pr.estado, pr.fecha_inicio, pr.fecha_fin, pr.eliminado,
@@ -378,11 +320,11 @@ def _ddl_vistas(s):
                    e.cedula AS est_cedula, e.nombres AS est_nombres, e.apellidos AS est_apellidos,
                    e.carrera AS est_carrera,
                    ta.nombres AS acad_nombres, ta.apellidos AS acad_apellidos,
-                   te.nombres AS emp_nombres,  te.apellidos AS emp_apellidos, te.nombre_empresa
+                   te.nombres AS emp_nombres, te.apellidos AS emp_apellidos, te.nombre_empresa
             FROM "{s}".practica pr
-            JOIN "{s}".postulacion p           ON pr.id_postulacion = p.id_postulacion
-            JOIN "{s}".estudiante e            ON p.cedula_estudiante = e.cedula
-            LEFT JOIN "{s}".tutor_academico ta   ON pr.id_tutor_academico = ta.cedula
+            JOIN "{s}".postulacion p ON pr.id_postulacion = p.id_postulacion
+            JOIN "{s}".estudiante e ON p.cedula_estudiante = e.cedula
+            LEFT JOIN "{s}".tutor_academico ta ON pr.id_tutor_academico = ta.cedula
             LEFT JOIN "{s}".tutor_empresarial te ON pr.id_tutor_empresarial = te.cedula''',
         f'''CREATE OR REPLACE VIEW "{s}".vista_oferta_detalle AS
             SELECT o.id_oferta, o.puesto, o.descripcion, o.fecha_publicacion, o.eliminado,
@@ -392,7 +334,6 @@ def _ddl_vistas(s):
     ]
 
 
-# Motor y fábrica de sesiones compartidos (un único pool para toda la aplicación).
 _engine = create_engine(
     URL.create(
         "postgresql+psycopg2",
@@ -416,9 +357,6 @@ class GestorPersistencia:
         self._session = _Session()
         self._asegurar_esquema()
 
-    # ------------------------------------------------------------------ #
-    # Utilidades internas
-    # ------------------------------------------------------------------ #
     @staticmethod
     def _entidad(entidad):
         return ENTIDADES[entidad]
@@ -438,8 +376,6 @@ class GestorPersistencia:
 
     @staticmethod
     def _bindize(sql, params):
-        """Traduce los marcadores posicionales '%s' (estilo psycopg2 que usan los
-        repositorios) a parámetros nombrados ':_pN' para SQLAlchemy `text()`."""
         partes = sql.split("%s")
         if len(partes) == 1:
             return sql, {}
@@ -453,8 +389,6 @@ class GestorPersistencia:
         return "".join(salida), binds
 
     def _condicion(self, where, params, incluir_eliminados):
-        """Construye la cláusula WHERE (como `text()` con sus binds) combinando el
-        filtro de borrado lógico con el `where` opcional del repositorio."""
         clausulas = []
         binds = {}
         if not incluir_eliminados:
@@ -469,8 +403,6 @@ class GestorPersistencia:
         return condicion.bindparams(**binds) if binds else condicion
 
     def _asegurar_esquema(self):
-        """Crea esquema, tablas, índices, restricciones y vistas si no existen
-        (idempotente)."""
         with _engine.begin() as conn:
             conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{self.schema}"'))
         metadata.create_all(_engine, checkfirst=True)
@@ -479,15 +411,11 @@ class GestorPersistencia:
                 conn.execute(text(ddl))
 
     def _commit_si_corresponde(self):
-        """Confirma solo si no estamos dentro de un bloque transaccion()."""
         if not self._en_transaccion:
             self._session.commit()
 
     @contextmanager
     def transaccion(self):
-        """Agrupa varias escrituras en una sola transacción atómica: se confirman
-        todas al salir del bloque, o se revierten si ocurre cualquier excepción.
-        Soporta anidamiento (solo el bloque más externo confirma)."""
         anterior = self._en_transaccion
         self._en_transaccion = True
         try:
@@ -501,16 +429,9 @@ class GestorPersistencia:
             self._en_transaccion = anterior
 
     def close(self):
-        """Cierra la sesión (devuelve la conexión al pool)."""
         self._session.close()
 
-    # ------------------------------------------------------------------ #
-    # Interfaz de acceso a datos (usada por los repositorios)
-    # ------------------------------------------------------------------ #
     def obtener(self, entidad, clave):
-        """Devuelve el objeto/dict con esa clave primaria, o None (incluye los
-        marcados como eliminados; el filtrado por 'eliminado' lo decide quien
-        llama)."""
         tabla, clase, pk = self._entidad(entidad)
         if clase is not None:
             return self._session.get(clase, clave)
@@ -519,7 +440,6 @@ class GestorPersistencia:
         return dict(fila) if fila is not None else None
 
     def existe(self, entidad, clave):
-        """True si la clave primaria existe físicamente (incluye eliminados)."""
         tabla, _clase, pk = self._entidad(entidad)
         fila = self._session.execute(
             select(literal(1)).select_from(tabla).where(tabla.c[pk] == clave).limit(1)
@@ -527,9 +447,6 @@ class GestorPersistencia:
         return fila is not None
 
     def listar(self, entidad, where=None, params=(), incluir_eliminados=False, orden=None):
-        """Lista objetos/dicts de la entidad. Por defecto excluye los eliminados.
-        `where` es una cláusula SQL adicional con marcadores %s y `params` sus
-        valores (compatibilidad con la API anterior)."""
         tabla, clase, _pk = self._entidad(entidad)
         objetivo = clase if clase is not None else tabla
         stmt = select(objetivo)
@@ -543,13 +460,11 @@ class GestorPersistencia:
         return [dict(f) for f in self._session.execute(stmt).mappings().all()]
 
     def insertar(self, entidad, objeto):
-        """Alta de una fila. Si la tabla tiene id generado por la base (IDENTITY),
-        se recupera con RETURNING y se asigna de vuelta al objeto."""
         tabla, clase, _pk = self._entidad(entidad)
         try:
             if clase is not None:
                 self._session.add(objeto)
-                self._session.flush()  # asigna los ids generados (IDENTITY)
+                self._session.flush()
             else:
                 generadas = {c.name for c in tabla.columns if c.identity is not None}
                 valores = {c.name: objeto[c.name]
@@ -572,7 +487,6 @@ class GestorPersistencia:
             raise
 
     def actualizar(self, entidad, objeto):
-        """Modifica una fila existente identificada por su clave primaria."""
         tabla, clase, pk = self._entidad(entidad)
         try:
             if clase is not None:
@@ -590,7 +504,6 @@ class GestorPersistencia:
             raise
 
     def marcar_eliminado(self, entidad, clave):
-        """Eliminación lógica: marca la fila como eliminada."""
         tabla, _clase, pk = self._entidad(entidad)
         try:
             self._session.execute(
@@ -601,13 +514,9 @@ class GestorPersistencia:
             raise
 
     def marcar_eliminados(self, entidad, claves):
-        """Eliminación lógica en lote por clave primaria (para la cascada)."""
         self.marcar_eliminados_por(entidad, self._entidad(entidad)[2], claves)
 
     def marcar_eliminados_por(self, entidad, columna, valores):
-        """Eliminación lógica en lote filtrando por una columna cualquiera
-        (p. ej. todos los formularios de un conjunto de prácticas). Dentro de un
-        bloque transaccion() varias de estas marcas se confirman atómicamente."""
         valores = list(valores)
         if not valores:
             return
@@ -621,9 +530,6 @@ class GestorPersistencia:
             raise
 
     def consultar(self, sql, params=()):
-        """Ejecuta una consulta SQL libre (p. ej. con JOIN sobre las vistas) y
-        devuelve una lista de dicts {columna: valor}. Las columnas DATE se
-        devuelven formateadas a 'dd/MM/yyyy' para mostrarse en la interfaz."""
         sql2, binds = self._bindize(sql, tuple(params))
         consulta = text(sql2)
         if binds:
@@ -644,13 +550,7 @@ class GestorPersistencia:
             resultado.append(registro)
         return resultado
 
-    # ------------------------------------------------------------------ #
-    # Sembrado de datos (escritura en lote, solo para el primer arranque)
-    # ------------------------------------------------------------------ #
     def _guardar_lote(self, entidad, diccionario_datos):
-        """Inserta/actualiza en lote un diccionario {clave: objeto} de forma
-        idempotente (ON CONFLICT DO UPDATE). Lo usa únicamente el sembrado de
-        datos del primer arranque, y solo para entidades con clave natural."""
         if not diccionario_datos:
             return
         tabla, _clase, pk = self._entidad(entidad)
@@ -671,13 +571,8 @@ class GestorPersistencia:
         tabla, _clase, _pk = self._entidad(entidad)
         return self._session.execute(select(func.count()).select_from(tabla)).scalar_one()
 
-    # ------------------------------------------------------------------ #
-    # Inicialización de datos
-    # ------------------------------------------------------------------ #
     @staticmethod
     def inicializar_datos_si_vacio():
-        """Crea esquema/tablas y, si no hay credenciales, siembra el admin y un
-        conjunto de datos de ejemplo para poder probar la aplicación."""
         gestor = GestorPersistencia()
         if gestor._contar("login") > 0:
             return
@@ -693,10 +588,6 @@ class GestorPersistencia:
 
     @staticmethod
     def _crear(clase, atributos):
-        """Instancia una clase del modelo sin pasar por sus validaciones. Para las
-        clases mapeadas se usa el class_manager de SQLAlchemy (igual que al
-        materializar una fila), de modo que la instancia tenga su estado ORM sin
-        ejecutar __init__."""
         try:
             objeto = inspect(clase).class_manager.new_instance()
         except Exception:
@@ -706,12 +597,8 @@ class GestorPersistencia:
         return objeto
 
     def _sembrar_datos_ejemplo(self):
-        """Inserta datos de ejemplo ajustados a la estructura del modelo. Se evita
-        la validación del constructor usando _crear. Cada usuario recibe su
-        credencial de acceso."""
         credenciales = {}
 
-        # --- Estudiantes ---
         estudiantes = {
             "1032222224": self._crear(Estudiante, {
                 "cedula": "1032222224", "contrasena": "est123",
@@ -739,7 +626,6 @@ class GestorPersistencia:
             credenciales[cedula] = Credencial(cedula, "est123", Estudiante.ROL)
         self._guardar_lote("estudiante", estudiantes)
 
-        # --- Tutores académicos ---
         tutores_academicos = {
             "0123456782": self._crear(TutorAcademico, {
                 "cedula": "0123456782", "contrasena": "ta123",
@@ -756,7 +642,6 @@ class GestorPersistencia:
             credenciales[cedula] = Credencial(cedula, "ta123", TutorAcademico.ROL)
         self._guardar_lote("tutor_academico", tutores_academicos)
 
-        # --- Tutores empresariales (empresa embebida) ---
         tutores_empresariales = {
             "0107778889": self._crear(TutorEmpresarial, {
                 "cedula": "0107778889", "contrasena": "te123",
@@ -779,7 +664,6 @@ class GestorPersistencia:
             credenciales[cedula] = Credencial(cedula, "te123", TutorEmpresarial.ROL)
         self._guardar_lote("tutor_empresarial", tutores_empresariales)
 
-        # --- Coordinador de vinculación ---
         coordinadores = {
             "0755555554": self._crear(CoordinadorVinculacion, {
                 "cedula": "0755555554", "contrasena": "cv123",
@@ -792,7 +676,6 @@ class GestorPersistencia:
             credenciales[cedula] = Credencial(cedula, "cv123", CoordinadorVinculacion.ROL)
         self._guardar_lote("coordinador_vinculacion", coordinadores)
 
-        # --- Ofertas (el id lo genera la base; lo recuperamos con insertar) ---
         oferta_backend = self._crear(Oferta, {
             "descripcion": "Desarrollo de API REST", "puesto": "Pasante Backend",
             "fecha_publicacion": "01/03/2026", "ruc_empresa": "0101010106001",
@@ -804,7 +687,6 @@ class GestorPersistencia:
         self.insertar("oferta", oferta_backend)
         self.insertar("oferta", oferta_frontend)
 
-        # --- Postulaciones (pendientes de validación) ---
         postulacion1 = self._crear(Postulacion, {
             "fecha": "04/03/2026", "estado_validacion": "Pendiente",
             "cedula_estudiante": "1032222224", "id_oferta": oferta_backend.id_oferta,
@@ -816,5 +698,4 @@ class GestorPersistencia:
         self.insertar("postulacion", postulacion1)
         self.insertar("postulacion", postulacion2)
 
-        # --- Credenciales de acceso de todos los usuarios sembrados ---
         self._guardar_lote("login", credenciales)
